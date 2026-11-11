@@ -1,7 +1,7 @@
 """Log a few synthetic training runs so there is something to look at.
 
-    mlop-server                      # in one terminal
-    python examples/demo.py          # in another (set MLOP_API_KEY or `mlop login` first)
+    mini-mlop-server                      # in one terminal
+    python examples/demo.py          # in another (set MLOP_API_KEY or `mini-mlop login` first)
 
 Needs numpy and pillow for the histogram/image parts: pip install "mini-mlop[media]"
 """
@@ -10,7 +10,7 @@ import math
 import random
 import sys
 
-import mlop
+import mini_mlop as mlop
 
 try:
     import numpy as np

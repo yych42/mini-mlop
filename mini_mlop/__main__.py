@@ -8,12 +8,12 @@ from .auth import login, logout
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "server":
-        # Convenience alias for the `mlop-server` command.
-        from mlop_server.__main__ import main as server_main
+        # Convenience alias for the `mini-mlop-server` command.
+        from mini_mlop_server.__main__ import main as server_main
 
         return server_main(sys.argv[2:])
 
-    parser = argparse.ArgumentParser(description="mlop")
+    parser = argparse.ArgumentParser(prog="mini-mlop", description="mini-mlop logging client")
     subparsers = parser.add_subparsers(dest="command", help="commands")
 
     for name, text in (
@@ -26,7 +26,7 @@ def main():
         p.add_argument(
             "--url", help="server address (default: $MLOP_URL or http://localhost:2718)"
         )
-    subparsers.add_parser("server", help="run the mlop server (same as `mlop-server`)")
+    subparsers.add_parser("server", help="run the mlop server (same as `mini-mlop-server`)")
 
     args = parser.parse_args()
     settings = {"url": args.url} if getattr(args, "url", None) else {}

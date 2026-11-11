@@ -29,7 +29,7 @@ pip install git+https://github.com/yych42/mini-mlop.git
 ```
 
 ```bash
-mlop-server
+mini-mlop-server
 ```
 
 The first start prints an API key and the address of the web UI (port 2718 by default).
@@ -45,11 +45,11 @@ export MLOP_URL=http://your-server:2718
 ```
 
 ```bash
-mlop login
+mini-mlop login
 ```
 
 ```python
-import mlop
+import mini_mlop as mlop
 
 run = mlop.init(project="hello-world", config={"lr": 1e-3})
 for step in range(1000):
@@ -62,10 +62,10 @@ metrics, histograms, images and tables if you want something to look at first.
 
 ## What you get
 
-- **Logger** (`mlop`): scalars, histograms, tables, images, audio, video, text and file artifacts;
+- **Logger** (`mini_mlop`): scalars, histograms, tables, images, audio, video, text and file artifacts;
   console capture; system and NVIDIA GPU metrics; git state; PyTorch `watch()`, Lightning and
   Hugging Face Transformers integrations. Logging is queued and batched off your training thread.
-- **Server** (`mlop_server`): ingest API, SQLite storage, API-key auth, stalled-run detection, and
+- **Server** (`mini_mlop_server`): ingest API, SQLite storage, API-key auth, stalled-run detection, and
   the web UI, in under 2,000 lines of standard-library Python.
 - **Web UI**: project and run lists, live charts with smoothing and log scale, run comparison,
   histogram/table/media browsers with a step slider, console logs, run config and machine details,
@@ -105,8 +105,8 @@ model-graph view is a plain tree.
 Changed in the logger: it talks to one address (`MLOP_URL`) instead of four; keys are kept in
 `~/.config/mlop/credentials.json` instead of the system keyring; `numpy`, `pillow`, `soundfile`
 and the NVIDIA bindings are optional extras (`pip install "mini-mlop[full] @ git+…"`); the import
-name is still `mlop`, so existing training scripts work unchanged — but do not install it next to
-upstream `mlop` in the same environment.
+name is `mini_mlop`, so it installs alongside upstream `mlop` without clashing. To move an existing
+script over, change its first line to `import mini_mlop as mlop`; the rest of the API is the same.
 
 ## Development
 

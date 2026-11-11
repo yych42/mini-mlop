@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from mlop_server import store as store_module
+from mini_mlop_server import store as store_module
 
 from conftest import Api
 
@@ -392,8 +392,8 @@ def test_web_ui_is_served(server):
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="needs sys.stdlib_module_names")
 def test_server_imports_nothing_but_the_standard_library():
     code = (
-        "import sys, mlop_server.app, mlop_server.__main__\n"
-        "std = set(sys.stdlib_module_names) | {'mlop_server', 'sitecustomize', 'usercustomize'}\n"
+        "import sys, mini_mlop_server.app, mini_mlop_server.__main__\n"
+        "std = set(sys.stdlib_module_names) | {'mini_mlop_server', 'sitecustomize', 'usercustomize'}\n"
         "print(sorted({m.split('.')[0] for m in sys.modules} - std))"
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
@@ -404,7 +404,7 @@ def test_server_imports_nothing_but_the_standard_library():
 def test_cli_key_commands(tmp_path):
     def cli(*args):
         return subprocess.run(
-            [sys.executable, "-m", "mlop_server", "--data", str(tmp_path), "keys", *args],
+            [sys.executable, "-m", "mini_mlop_server", "--data", str(tmp_path), "keys", *args],
             capture_output=True, text=True, check=True,
         )
 

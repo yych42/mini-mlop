@@ -3,8 +3,8 @@ import os
 from argparse import Namespace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
-import mlop
-from mlop.util import import_lib
+import mini_mlop as mlop
+from mini_mlop.util import import_lib
 
 if TYPE_CHECKING:
     import torch

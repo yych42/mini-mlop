@@ -1,4 +1,4 @@
-"""Command line: `mlop-server` / `python -m mlop_server`."""
+"""Command line: `mini-mlop-server` / `python -m mini_mlop_server`."""
 
 import argparse
 import os
@@ -22,10 +22,10 @@ def _env_int(name, default):
 
 def build_parser():
     p = argparse.ArgumentParser(
-        prog="mlop-server",
+        prog="mini-mlop-server",
         description="mlop experiment tracking server: one process, one data directory.",
     )
-    p.add_argument("--version", action="version", version=f"mlop-server {__version__}")
+    p.add_argument("--version", action="version", version=f"mini-mlop-server {__version__}")
     p.add_argument(
         "--data",
         default=os.environ.get("MLOP_DATA_DIR", DEFAULT_DATA),
@@ -97,7 +97,7 @@ def keys_command(args):
         if args.action == "list":
             keys = store.list_keys()
             if not keys:
-                print("no keys yet; create one with: mlop-server keys create NAME")
+                print("no keys yet; create one with: mini-mlop-server keys create NAME")
             for k in keys:
                 used = (
                     time.strftime("%Y-%m-%d", time.localtime(k["last_used_at"] / 1000))
@@ -130,11 +130,11 @@ def serve(args):
     try:
         server = make_server(config)
     except OSError as e:
-        sys.exit(f"mlop-server: cannot listen on {args.host}:{args.port}: {e}")
+        sys.exit(f"mini-mlop-server: cannot listen on {args.host}:{args.port}: {e}")
 
     shown = "localhost" if args.host in ("0.0.0.0", "::") else args.host
     url = config.public_url or f"http://{shown}:{server.server_address[1]}"
-    print(f"mlop-server {__version__}")
+    print(f"mini-mlop-server {__version__}")
     print(f"  data  {server.store.dir}")
     print(f"  open  {url}")
     if not config.auth:
@@ -143,9 +143,9 @@ def serve(args):
         key = server.store.create_key("default")["key"]
         print(f"  key   {key}")
         print("        first start: this API key was just created and is shown once.")
-        print("        use it to sign in to the web UI and for `mlop login`.")
+        print("        use it to sign in to the web UI and for `mini-mlop login`.")
     else:
-        print("  auth  API key required (mlop-server keys create NAME for a new one)")
+        print("  auth  API key required (mini-mlop-server keys create NAME for a new one)")
     sys.stdout.flush()
 
     def stop(*_):

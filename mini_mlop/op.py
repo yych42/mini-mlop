@@ -10,7 +10,7 @@ import time
 import traceback
 from typing import Any, Dict, Mapping, Union
 
-import mlop
+import mini_mlop as mlop
 
 from .api import (
     make_compat_alert_v1,

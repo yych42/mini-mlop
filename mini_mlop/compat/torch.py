@@ -1,9 +1,9 @@
 import logging
 from typing import TYPE_CHECKING, Optional
 
-import mlop
-from mlop.api import make_compat_graph_nodes_v1, make_compat_graph_v1
-from mlop.util import import_lib
+import mini_mlop as mlop
+from mini_mlop.api import make_compat_graph_nodes_v1, make_compat_graph_v1
+from mini_mlop.util import import_lib
 
 if TYPE_CHECKING:
     import torch

@@ -3,7 +3,7 @@
 ```
  training script                        the server (one process)
 ┌────────────────────┐                ┌───────────────────────────────────────┐
-│ mlop  (Python)     │   HTTP         │ mlop_server                           │
+│ mini_mlop (Python) │   HTTP         │ mini_mlop_server                           │
 │  log() → queue ────┼── NDJSON ─────▶│  app.py    routing, auth, streaming   │
 │  files → uploader ─┼── PUT ────────▶│  store.py  SQLite + files on disk     │
 │  heartbeat ────────┼── POST ───────▶│  web/      static UI (no build step)  │
@@ -16,10 +16,10 @@
 
 | Path | What |
 |---|---|
-| `mlop/` | The logging client. Depends on `httpx` and `psutil`. |
-| `mlop/compat/` | PyTorch, Lightning and Transformers integrations. |
-| `mlop_server/` | The server. Standard library only; never imports `mlop`. |
-| `mlop_server/web/` | The web UI: `index.html`, `app.js`, `chart.js`, `style.css`. |
+| `mini_mlop/` | The logging client. Depends on `httpx` and `psutil`. |
+| `mini_mlop/compat/` | PyTorch, Lightning and Transformers integrations. |
+| `mini_mlop_server/` | The server. Standard library only; never imports `mini_mlop`. |
+| `mini_mlop_server/web/` | The web UI: `index.html`, `app.js`, `chart.js`, `style.css`. |
 | `tests/` | End-to-end tests: real client, real server, real HTTP. |
 | `deploy/` | Dockerfile, Compose file, systemd unit. |
 | `examples/` | Demo script and notebooks. |

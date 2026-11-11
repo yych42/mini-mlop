@@ -5,7 +5,7 @@ import urllib.request
 
 import pytest
 
-from mlop_server.app import Config, make_server
+from mini_mlop_server.app import Config, make_server
 
 
 class Api:

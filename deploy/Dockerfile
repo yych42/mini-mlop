@@ -1,8 +1,8 @@
-# mlop server: the image is Python plus this repository's mlop_server package.
-# Build from the repository root:  docker build -f deploy/Dockerfile -t mlop-server .
+# mlop server: the image is Python plus this repository's mini_mlop_server package.
+# Build from the repository root:  docker build -f deploy/Dockerfile -t mini-mlop-server .
 FROM python:3.13-alpine
 
-COPY mlop_server /app/mlop_server
+COPY mini_mlop_server /app/mini_mlop_server
 
 RUN adduser -D -u 1000 mlop && mkdir /data && chown mlop /data
 USER mlop
@@ -14,4 +14,4 @@ EXPOSE 2718
 HEALTHCHECK --interval=30s --timeout=3s \
   CMD wget -qO- http://127.0.0.1:2718/api/health || exit 1
 
-ENTRYPOINT ["python", "-m", "mlop_server"]
+ENTRYPOINT ["python", "-m", "mini_mlop_server"]

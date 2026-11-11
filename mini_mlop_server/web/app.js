@@ -204,7 +204,7 @@ async function showLogin(message) {
   put(view, h("div", { class: "card pad login" },
     h("h1", {}, "Sign in"),
     h("p", { class: "muted" }, "Paste an API key. The server printed one the first time it started; " +
-      "more can be made with ", h("code", {}, "mlop-server keys create NAME"), "."),
+      "more can be made with ", h("code", {}, "mini-mlop-server keys create NAME"), "."),
     form));
   key.focus();
 }
@@ -218,7 +218,7 @@ async function viewProjects() {
       h("div", { class: "head" }, h("h1", {}, "Projects")),
       emptyState("No runs yet. Log your first one:",
         h("pre", {}, `pip install git+https://github.com/yych42/mini-mlop.git\nexport MLOP_URL=${me.url}\n\n` +
-          `import mlop\nrun = mlop.init(project="hello")\nrun.log({"loss": 0.5})\nrun.finish()`)));
+          `import mini_mlop as mlop\nrun = mlop.init(project="hello")\nrun.log({"loss": 0.5})\nrun.finish()`)));
     poll(async () => { if ((await api("/api/projects")).projects.length) route(); });
     return;
   }

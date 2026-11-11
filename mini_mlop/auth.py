@@ -57,10 +57,28 @@ def _check(settings, key):
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
     if r.status_code == 200:
+        _warn_on_version_mismatch(r)
         return True, None
     if r.status_code in (401, 403):
         return False, None
     return None, f"unexpected response {r.status_code}"
+
+
+def _warn_on_version_mismatch(response):
+    """Client and server are released together; before 1.0 a differing minor
+    version may mean a differing protocol, so say so instead of failing oddly."""
+    from . import __version__
+
+    try:
+        theirs = str(response.json().get("version") or "")
+    except Exception:
+        return
+    if theirs and theirs.split(".")[:2] != __version__.split(".")[:2]:
+        tlogger.warning(
+            "%s: this client is version %s but the server is %s; "
+            "upgrade whichever is older if logging misbehaves",
+            tag, __version__, theirs,
+        )
 
 
 def _interactive() -> bool:
@@ -102,16 +120,16 @@ def login(settings=None, key=None) -> bool:
             if ok is None:
                 raise ConnectionError(
                     f"cannot reach the mlop server at {base} ({problem}). "
-                    "Start one with `mlop-server`, or point MLOP_URL / "
+                    "Start one with `mini-mlop-server`, or point MLOP_URL / "
                     'settings={"url": ...} at a running server.'
                 )
             if not _interactive() or attempt == MAX_PROMPTS:
                 raise PermissionError(
                     f"the mlop server at {base} did not accept "
                     f"{'the API key' if key else 'a request without an API key'}. "
-                    "Set MLOP_API_KEY or run `mlop login`; keys are created in "
+                    "Set MLOP_API_KEY or run `mini-mlop login`; keys are created in "
                     f"the web UI ({settings.url_token}) or with "
-                    "`mlop-server keys create NAME`."
+                    "`mini-mlop-server keys create NAME`."
                 )
             if key:
                 tlogger.warning("%s: the server rejected that key", tag)

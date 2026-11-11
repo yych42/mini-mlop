@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-import mlop
-from mlop import auth
+import mini_mlop as mlop
+from mini_mlop import auth
 
 from conftest import Api
 
@@ -106,7 +106,7 @@ def test_structured_data_and_files(server, api, tmp_path):
 
 def test_histogram_without_numpy_matches_numpy():
     np = pytest.importorskip("numpy")
-    from mlop import data as mdata
+    from mini_mlop import data as mdata
 
     values = [0.1, 0.2, 0.2, 0.9, 1.5, 3.0, 3.0, 2.2]
     want = mdata._histogram(values, 4)
@@ -201,7 +201,7 @@ def test_no_auth_server_needs_no_key(open_server, tmp_path):
 
 
 def test_settings_resolve_server_address(monkeypatch):
-    from mlop.sets import Settings, setup
+    from mini_mlop.sets import Settings, setup
 
     assert Settings().url_base() == "http://localhost:2718"
     assert setup({"host": "pi.local"}).url_base() == "http://pi.local:2718"
@@ -212,3 +212,11 @@ def test_settings_resolve_server_address(monkeypatch):
     monkeypatch.setenv("MLOP_URL", "http://tracker:1234")
     assert Settings().url_base() == "http://tracker:1234"
     assert setup({"host": "pi.local"}).url_base() == "http://pi.local:2718"  # explicit wins
+
+
+def test_version_mismatch_with_server_is_warned(server, tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(mlop, "__version__", "9.9.0")
+    with caplog.at_level("WARNING"):
+        ok, _ = auth._check(mlop.sets.setup({"url": server.url}), server.key)
+    assert ok
+    assert "client is version 9.9.0 but the server is" in caplog.text

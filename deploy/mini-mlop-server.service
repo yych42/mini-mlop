@@ -3,9 +3,9 @@
 #   sudo useradd --system --create-home --home-dir /var/lib/mlop mlop
 #   sudo -u mlop python3 -m venv /var/lib/mlop/venv
 #   sudo -u mlop /var/lib/mlop/venv/bin/pip install git+https://github.com/yych42/mini-mlop.git
-#   sudo cp deploy/mlop-server.service /etc/systemd/system/
-#   sudo systemctl enable --now mlop-server
-#   journalctl -u mlop-server | grep key        # the API key, printed on first start
+#   sudo cp deploy/mini-mlop-server.service /etc/systemd/system/
+#   sudo systemctl enable --now mini-mlop-server
+#   journalctl -u mini-mlop-server | grep key        # the API key, printed on first start
 
 [Unit]
 Description=mlop experiment tracking server
@@ -15,7 +15,7 @@ Wants=network-online.target
 [Service]
 User=mlop
 Environment=MLOP_DATA_DIR=/var/lib/mlop/data
-ExecStart=/var/lib/mlop/venv/bin/mlop-server
+ExecStart=/var/lib/mlop/venv/bin/mini-mlop-server
 Restart=on-failure
 RestartSec=3
 

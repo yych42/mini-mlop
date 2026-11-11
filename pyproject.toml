@@ -15,8 +15,8 @@ authors = [
 ]
 keywords = ["mlops", "experiment-tracking", "self-hosted", "machine-learning"]
 
-# The server (`mlop_server`) needs nothing beyond the standard library.
-# These two are for the logging client (`mlop`).
+# The server (`mini_mlop_server`) needs nothing beyond the standard library.
+# These two are for the logging client (`mini_mlop`).
 dependencies = [
   "httpx",
   "psutil",
@@ -29,14 +29,14 @@ full = ["numpy", "pillow", "soundfile", "nvidia-ml-py"]
 dev = ["pytest", "numpy", "pillow"]
 
 [project.scripts]
-mlop = "mlop.__main__:main"
-mlop-server = "mlop_server.__main__:main"
+mini-mlop = "mini_mlop.__main__:main"
+mini-mlop-server = "mini_mlop_server.__main__:main"
 
 [tool.setuptools]
-packages = ["mlop", "mlop.compat", "mlop_server"]
+packages = ["mini_mlop", "mini_mlop.compat", "mini_mlop_server"]
 
 [tool.setuptools.package-data]
-mlop_server = ["web/*"]
+mini_mlop_server = ["web/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

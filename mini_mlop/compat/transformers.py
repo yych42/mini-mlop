@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import mlop
-from mlop.util import import_lib
+import mini_mlop as mlop
+from mini_mlop.util import import_lib
 
 if TYPE_CHECKING:
     from transformers import modelcard
@@ -45,7 +45,7 @@ tag = "Transformers"
 
 class MLOPCallback(TrainerCallback):
     def __init__(self):
-        if not importlib.util.find_spec("mlop"):
+        if not importlib.util.find_spec("mini_mlop"):
             logger.error(f"{tag}: mlop is not installed")
             return None
         self.op = None
@@ -176,4 +176,4 @@ class MLOPCallback(TrainerCallback):
 
 
 # TODO: remove patch for transformers
-INTEGRATION_TO_CALLBACK["mlop"] = MLOPCallback()
+INTEGRATION_TO_CALLBACK["mini_mlop"] = MLOPCallback()

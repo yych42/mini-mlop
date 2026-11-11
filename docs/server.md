@@ -1,12 +1,12 @@
 # Running the server
 
 ```bash
-mlop-server
+mini-mlop-server
 ```
 
-`python -m mlop_server` and `mlop server` do the same thing. The server needs Python 3.9+ and
-nothing else — if you would rather not pip-install on the box, copying the `mlop_server/` folder
-and running `python -m mlop_server` next to it works too.
+`python -m mini_mlop_server` and `mini-mlop server` do the same thing. The server needs Python 3.9+ and
+nothing else — if you would rather not pip-install on the box, copying the `mini_mlop_server/` folder
+and running `python -m mini_mlop_server` next to it works too.
 
 ## Options
 
@@ -27,15 +27,15 @@ Every request needs a key unless the server runs with `--no-auth`. The first sta
 and prints it once. After that:
 
 ```bash
-mlop-server keys create laptop
+mini-mlop-server keys create laptop
 ```
 
 ```bash
-mlop-server keys list
+mini-mlop-server keys list
 ```
 
 ```bash
-mlop-server keys revoke 2
+mini-mlop-server keys revoke 2
 ```
 
 These work whether or not the server is running (pass the same `--data` if you changed it), so a
@@ -51,7 +51,7 @@ who can connect to the port can read and delete your data.
 
 ## Keeping it running
 
-**systemd** (Raspberry Pi OS, Debian, Ubuntu…): [`deploy/mlop-server.service`](../deploy/mlop-server.service)
+**systemd** (Raspberry Pi OS, Debian, Ubuntu…): [`deploy/mini-mlop-server.service`](../deploy/mini-mlop-server.service)
 has the unit and the four commands to install it in its header.
 
 **Docker**: from the repository root,
@@ -65,7 +65,7 @@ docker compose -f deploy/compose.yaml logs mlop
 ```
 
 The second command shows the API key printed on first start. The image is `python:alpine` plus
-the `mlop_server` folder. (The Dockerfile has not been exercised in CI yet — the daemon was not
+the `mini_mlop_server` folder. (The Dockerfile has not been exercised in CI yet — the daemon was not
 available where this was written — so treat it as a starting point.)
 
 ## HTTPS and exposure

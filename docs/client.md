@@ -25,20 +25,20 @@ In order of precedence:
 3. the `MLOP_URL` environment variable
 4. `http://localhost:2718`
 
-The API key comes from `settings={"_auth": ...}`, then `MLOP_API_KEY`, then whatever `mlop login`
+The API key comes from `settings={"_auth": ...}`, then `MLOP_API_KEY`, then whatever `mini-mlop login`
 saved for that server in `~/.config/mlop/credentials.json` (mode 0600, one key per server
 address). In a terminal or notebook you are prompted when none of those works; in a batch job you
 get a `PermissionError` that says what to set. An unreachable server raises `ConnectionError`
 from `mlop.init()` rather than failing silently later.
 
 ```bash
-mlop login --url http://pi.local:2718
+mini-mlop login --url http://pi.local:2718
 ```
 
 ## Logging
 
 ```python
-import mlop
+import mini_mlop as mlop
 
 run = mlop.init(project="mnist", name="baseline", config={"lr": 1e-3, "epochs": 10})
 
@@ -72,12 +72,12 @@ run.watch(model)                                   # PyTorch: gradient and param
 ```
 
 ```python
-from mlop.compat.lightning import MLOPLogger       # Lightning
+from mini_mlop.compat.lightning import MLOPLogger       # Lightning
 trainer = Trainer(logger=MLOPLogger(project="mnist"))
 ```
 
 ```python
-from mlop.compat.transformers import MLOPCallback  # Hugging Face Trainer
+from mini_mlop.compat.transformers import MLOPCallback  # Hugging Face Trainer
 trainer = Trainer(..., callbacks=[MLOPCallback()])
 ```
 

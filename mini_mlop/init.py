@@ -1,7 +1,7 @@
 import logging
 from typing import Any, Dict, Union
 
-import mlop
+import mini_mlop as mlop
 
 from .op import Op
 from .sets import Settings, setup
