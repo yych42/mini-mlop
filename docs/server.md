@@ -4,7 +4,7 @@
 mini-mlop-server
 ```
 
-`python -m mini_mlop_server` and `mini-mlop server` do the same thing. The server needs Python 3.9+ and
+`python -m mini_mlop_server` and `mini-mlop server` do the same thing. The server needs Python 3.10+ and
 nothing else — if you would rather not pip-install on the box, copying the `mini_mlop_server/` folder
 and running `python -m mini_mlop_server` next to it works too.
 

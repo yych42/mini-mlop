@@ -23,7 +23,7 @@ deployment files — lives in this one repository.
 
 ## Quick start
 
-On the machine that will hold your data (Python 3.9+, nothing else needed):
+On the machine that will hold your data (Python 3.10+, nothing else needed):
 
 ```bash
 pip install git+https://github.com/yych42/mini-mlop.git

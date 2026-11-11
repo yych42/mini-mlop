@@ -9,7 +9,7 @@ description = "Lightweight, self-hosted ML experiment tracking: a Python logger 
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     {name = "mini-mlop contributors"},
 ]
