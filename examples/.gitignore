@@ -1,4 +1,4 @@
-.mlop
+.mini-mlop
 .lightning
 *.pt
 *.onnx*

@@ -1,6 +1,0 @@
-GitPython
-httpx[http2]
-keyring
-soundfile
-pillow
-psutil
