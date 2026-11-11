@@ -9,7 +9,7 @@
 │  heartbeat ────────┼── POST ───────▶│  web/      static UI (no build step)  │
 └────────────────────┘                └──────────────┬────────────────────────┘
         browser ──────── GET /api/… ─────────────────┘
-                                         <data>/mlop.db     <data>/files/<run>/
+                                         <data>/mini-mlop.db     <data>/files/<run>/
 ```
 
 ## Repository layout

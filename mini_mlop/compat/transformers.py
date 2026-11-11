@@ -46,7 +46,7 @@ tag = "Transformers"
 class MLOPCallback(TrainerCallback):
     def __init__(self):
         if not importlib.util.find_spec("mini_mlop"):
-            logger.error(f"{tag}: mlop is not installed")
+            logger.error(f"{tag}: mini-mlop is not installed")
             return None
         self.op = None
         self._initialized = False

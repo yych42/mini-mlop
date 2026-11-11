@@ -13,8 +13,8 @@ mini-mlop query --format csv - < question.sql
 ```
 
 ```bash
-curl -s -H "Authorization: Bearer $MLOP_API_KEY" "$MLOP_URL/api/query/schema"
-curl -s -H "Authorization: Bearer $MLOP_API_KEY" "$MLOP_URL/api/query" \
+curl -s -H "Authorization: Bearer $MINI_MLOP_API_KEY" "$MINI_MLOP_URL/api/query/schema"
+curl -s -H "Authorization: Bearer $MINI_MLOP_API_KEY" "$MINI_MLOP_URL/api/query" \
      -d '{"sql": "SELECT name, status FROM runs WHERE project = ?", "params": ["mnist"]}'
 ```
 
@@ -82,7 +82,7 @@ argument). Authenticate with an API key as a bearer token.
 
 ```bash
 claude mcp add --transport http mini-mlop http://your-server:2718/mcp \
-    --header "Authorization: Bearer $MLOP_API_KEY"
+    --header "Authorization: Bearer $MINI_MLOP_API_KEY"
 ```
 
 Any MCP client that supports HTTP servers with a custom header works the same way. The endpoint
@@ -157,10 +157,10 @@ container on Fly, Railway, Modal or Cloud Run:
 
 ```bash
 docker build -f deploy/sandbox.Dockerfile -t mini-mlop-sandbox .
-docker run -p 8700:8700 -e MLOP_SANDBOX_TOKEN=a-long-random-secret mini-mlop-sandbox
+docker run -p 8700:8700 -e MINI_MLOP_SANDBOX_TOKEN=a-long-random-secret mini-mlop-sandbox
 ```
 
-or without Docker: `MLOP_SANDBOX_TOKEN=… python -m mini_mlop_server.sandbox_runner`. Then enter
+or without Docker: `MINI_MLOP_SANDBOX_TOKEN=… python -m mini_mlop_server.sandbox_runner`. Then enter
 its URL and token in Settings. Put it behind HTTPS if it is reachable from the internet.
 
 **Other sandbox providers.** A provider is one class with one method:

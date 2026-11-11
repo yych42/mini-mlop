@@ -12,11 +12,11 @@ and running `python -m mini_mlop_server` next to it works too.
 
 | Flag | Environment | Default | |
 |---|---|---|---|
-| `--data DIR` | `MLOP_DATA_DIR` | `~/.mlop/server` | Database and uploaded files |
-| `--host ADDR` | `MLOP_HOST` | `0.0.0.0` | Listen address; `127.0.0.1` for this machine only |
-| `--port N` | `MLOP_PORT` | `2718` | |
-| `--public-url URL` | `MLOP_PUBLIC_URL` | from each request | Address used in the run links sent to clients |
-| `--no-auth` | `MLOP_NO_AUTH=1` | off | Accept requests without a key |
+| `--data DIR` | `MINI_MLOP_DATA_DIR` | `~/.mini-mlop/server` | Database and uploaded files |
+| `--host ADDR` | `MINI_MLOP_HOST` | `0.0.0.0` | Listen address; `127.0.0.1` for this machine only |
+| `--port N` | `MINI_MLOP_PORT` | `2718` | |
+| `--public-url URL` | `MINI_MLOP_PUBLIC_URL` | from each request | Address used in the run links sent to clients |
+| `--no-auth` | `MINI_MLOP_NO_AUTH=1` | off | Accept requests without a key |
 | `--stale-after SECONDS` | | `300` | Mark a run failed after this long with no heartbeat |
 | `--max-upload-mb N` | | `2048` | Largest accepted file or ingest request |
 | `--verbose` | | off | Log every request |
@@ -61,7 +61,7 @@ docker compose -f deploy/compose.yaml up -d
 ```
 
 ```bash
-docker compose -f deploy/compose.yaml logs mlop
+docker compose -f deploy/compose.yaml logs mini-mlop
 ```
 
 The second command shows the API key printed on first start. The image is `python:alpine` plus
@@ -86,10 +86,10 @@ set `--public-url` explicitly.
 
 ## Backups and moving
 
-All state is in the data directory: `mlop.db` (plus `mlop.db-wal` while running) and `files/`.
+All state is in the data directory: `mini-mlop.db` (plus `mini-mlop.db-wal` while running) and `files/`.
 
 - Stopped server: copy the directory.
-- Running server: `sqlite3 ~/.mlop/server/mlop.db ".backup backup.db"` gives a consistent copy of
+- Running server: `sqlite3 ~/.mini-mlop/server/mini-mlop.db ".backup backup.db"` gives a consistent copy of
   the database; then copy `files/`.
 
 To move to another machine, copy the directory and start the server there with `--data`.
@@ -100,7 +100,7 @@ A metric point costs about 29 bytes, so a run logging 20 metrics every step for 
 around 60 MB. System metrics add roughly a dozen series sampled every 4 seconds. Uploaded media is
 stored as-is. Deleting a run or project in the UI removes its rows and files; the database file
 does not shrink on its own, but the space is reused. To hand it back to the filesystem, stop the
-server and run `sqlite3 mlop.db "VACUUM"`.
+server and run `sqlite3 mini-mlop.db "VACUUM"`.
 
 ## Limits worth knowing
 

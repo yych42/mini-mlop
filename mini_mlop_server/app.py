@@ -25,7 +25,7 @@ from .query import QueryError, describe as describe_query
 from .store import Invalid, NotFound, Store
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-COOKIE = "mlop_session"
+COOKIE = "mini_mlop_session"
 MAX_JSON_BODY = 32 * 2**20
 MAX_LINE = 8 * 2**20
 CHUNK = 64 * 1024
@@ -107,7 +107,7 @@ def route(method, pattern, auth=True):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "mlop/" + __version__
+    server_version = "mini-mlop/" + __version__
     sys_version = ""
     timeout = 75  # idle keep-alive connections are dropped after this
 
@@ -487,7 +487,7 @@ def me(h):
 @route("POST", "/api/slug")
 def slug(h):
     # Kept for wire compatibility with upstream mlop clients.
-    h.send_json({"organization": {"slug": "mlop"}, "version": __version__})
+    h.send_json({"organization": {"slug": "mini-mlop"}, "version": __version__})
 
 
 @route("POST", "/api/runs/create")
@@ -504,7 +504,7 @@ def runs_create(h):
         {
             "runId": run_id,
             "projectName": b.get("projectName"),
-            "organizationSlug": "mlop",
+            "organizationSlug": "mini-mlop",
             "url": f"{h.base_url()}/#/runs/{run_id}",
         }
     )

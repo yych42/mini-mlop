@@ -1,8 +1,8 @@
-"""SQLite-backed storage for the mlop server.
+"""SQLite-backed storage for the mini-mlop server.
 
 Everything the server knows lives in one directory:
 
-    <data>/mlop.db        runs, metrics, logs, structured data, file index
+    <data>/mini-mlop.db        runs, metrics, logs, structured data, file index
     <data>/files/<run>/   uploaded media and artifacts
 
 One connection does all the writing (SQLite allows a single writer anyway),
@@ -154,7 +154,7 @@ FILE_KINDS = {
     "mp4": "VIDEO", "webm": "VIDEO", "mov": "VIDEO",
     "txt": "TEXT",
 }  # fmt: skip
-KEY_PREFIX = "mlop_"
+KEY_PREFIX = "mini_mlop_"
 HEARTBEAT_WRITE_INTERVAL_MS = 15_000
 INSERT_BATCH = 5000
 MAX_NAME = 512
@@ -224,7 +224,7 @@ class Store:
             os.chmod(self.dir, 0o700)
         except OSError:
             pass
-        self.path = os.path.join(self.dir, "mlop.db")
+        self.path = os.path.join(self.dir, "mini-mlop.db")
 
         self._lock = threading.RLock()
         self._w = sqlite3.connect(
@@ -265,7 +265,7 @@ class Store:
         version = int(row[0]) if row else 0
         if version > SCHEMA_VERSION:
             raise RuntimeError(
-                f"{self.path} was written by a newer mlop server "
+                f"{self.path} was written by a newer mini-mlop server "
                 f"(schema {version}, this build understands {SCHEMA_VERSION})"
             )
         columns = [r[1] for r in self._w.execute("PRAGMA table_info(chats)")]

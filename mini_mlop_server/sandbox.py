@@ -105,7 +105,7 @@ def execute(code, files=None, timeout=DEFAULT_TIMEOUT):
     files = files or {}
     check_files(files)
     timeout = clamp_timeout(timeout)
-    work = tempfile.mkdtemp(prefix="mlop-sandbox-")
+    work = tempfile.mkdtemp(prefix="mini-mlop-sandbox-")
     started = time.monotonic()
     try:
         for name, data in files.items():

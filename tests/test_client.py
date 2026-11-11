@@ -19,8 +19,8 @@ FAST = {
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.delenv("MLOP_URL", raising=False)
-    monkeypatch.delenv("MLOP_API_KEY", raising=False)
+    monkeypatch.delenv("MINI_MLOP_URL", raising=False)
+    monkeypatch.delenv("MINI_MLOP_API_KEY", raising=False)
 
 
 def start(server, tmp_path, **kw):
@@ -166,12 +166,12 @@ def test_stop_from_server_interrupts_the_script(server, api, tmp_path):
 def test_wrong_key_is_a_clear_error(server, tmp_path):
     with pytest.raises(PermissionError, match="did not accept the API key"):
         mlop.init(
-            dir=str(tmp_path), settings={"url": server.url, "_auth": "mlop_wrong"}
+            dir=str(tmp_path), settings={"url": server.url, "_auth": "mini_mlop_wrong"}
         )
 
 
 def test_unreachable_server_is_a_clear_error(tmp_path):
-    with pytest.raises(ConnectionError, match="cannot reach the mlop server"):
+    with pytest.raises(ConnectionError, match="cannot reach the mini-mlop server"):
         mlop.init(
             dir=str(tmp_path),
             settings={"url": "http://127.0.0.1:9", "x_file_stream_timeout_seconds": 2},
@@ -209,7 +209,7 @@ def test_settings_resolve_server_address(monkeypatch):
     assert setup({"url": "https://mlop.example.com/"}).url_num == (
         "https://mlop.example.com/ingest/metrics"
     )
-    monkeypatch.setenv("MLOP_URL", "http://tracker:1234")
+    monkeypatch.setenv("MINI_MLOP_URL", "http://tracker:1234")
     assert Settings().url_base() == "http://tracker:1234"
     assert setup({"host": "pi.local"}).url_base() == "http://pi.local:2718"  # explicit wins
 
@@ -238,7 +238,7 @@ def test_query_command(server, tmp_path):
         return subprocess.run(
             [sys.executable, "-m", "mini_mlop", "query", "--url", server.url, *args],
             capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
-            env={**os.environ, "MLOP_API_KEY": server.key},
+            env={**os.environ, "MINI_MLOP_API_KEY": server.key},
         )
 
     assert "metrics" in cli().stdout and "Examples:" in cli("--schema").stdout

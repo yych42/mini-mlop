@@ -1,4 +1,4 @@
-// mlop web UI. No framework, no build step: this file is what the browser runs.
+// mini-mlop web UI. No framework, no build step: this file is what the browser runs.
 import { initAgent, agentSettings } from "./agent.js";
 import { LineChart, drawHistogram, fmt, fmtStep, fmtDuration } from "./chart.js";
 
@@ -76,7 +76,7 @@ function setCrumbs(...parts) {
   for (const [text, href] of parts) {
     crumbs.append(h("span", { class: "sep" }, "/"), href ? h("a", { href }, text) : h("span", {}, text));
   }
-  document.title = parts.length ? `${parts[parts.length - 1][0]} · mlop` : "mlop";
+  document.title = parts.length ? `${parts[parts.length - 1][0]} · mini-mlop` : "mini-mlop";
 }
 
 // -- formatting --------------------------------------------------------------
@@ -188,7 +188,7 @@ async function showLogin(message) {
   setCrumbs();
   view = h("div");
   put(root, view);
-  const key = h("input", { type: "password", placeholder: "mlop_…", autocomplete: "current-password",
+  const key = h("input", { type: "password", placeholder: "mini_mlop_…", autocomplete: "current-password",
     "aria-label": "API key", required: true });
   const err = h("div", { class: "error" }, message || "");
   const form = h("form", {
@@ -218,7 +218,7 @@ async function viewProjects() {
     put(view, 
       h("div", { class: "head" }, h("h1", {}, "Projects")),
       emptyState("No runs yet. Log your first one:",
-        h("pre", {}, `pip install git+https://github.com/yych42/mini-mlop.git\nexport MLOP_URL=${me.url}\n\n` +
+        h("pre", {}, `pip install git+https://github.com/yych42/mini-mlop.git\nexport MINI_MLOP_URL=${me.url}\n\n` +
           `import mini_mlop as mlop\nrun = mlop.init(project="hello")\nrun.log({"loss": 0.5})\nrun.finish()`)));
     poll(async () => { if ((await api("/api/projects")).projects.length) route(); });
     return;
@@ -644,7 +644,7 @@ async function viewSettings() {
       me.auth ? h("button", { onclick: async () => { await api("/api/logout", { method: "POST" }); showLogin(); } }, "Sign out") : null),
     h("h2", { style: "margin-top:0" }, "Connect a training script"),
     h("div", { class: "card pad" }, h("pre", {},
-      `pip install git+https://github.com/yych42/mini-mlop.git\nexport MLOP_URL=${me.url}\n${me.auth ? "mini-mlop login   # paste an API key once per machine\n" : ""}`)),
+      `pip install git+https://github.com/yych42/mini-mlop.git\nexport MINI_MLOP_URL=${me.url}\n${me.auth ? "mini-mlop login   # paste an API key once per machine\n" : ""}`)),
     h("h2", {}, "API keys"),
     me.auth ? null : h("p", { class: "error" }, "Authentication is disabled (--no-auth): anyone who can reach this server can read and write. Keys are not checked."),
     h("div", { class: "card tablewrap" }, h("table", {},

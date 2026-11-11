@@ -20,7 +20,7 @@ def _credentials_path() -> str:
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
         os.path.expanduser("~"), ".config"
     )
-    return os.path.join(base, "mlop", "credentials.json")
+    return os.path.join(base, "mini-mlop", "credentials.json")
 
 
 def _load() -> dict:
@@ -94,7 +94,7 @@ def login(settings=None, key=None) -> bool:
     """Make sure we hold a key the server accepts, and remember it.
 
     The key is taken from, in order: the `key` argument, settings["_auth"],
-    the MLOP_API_KEY environment variable, and the keys saved by earlier
+    the MINI_MLOP_API_KEY environment variable, and the keys saved by earlier
     logins. In a terminal or notebook you are prompted if none of those work;
     anywhere else an error explains what to set.
     """
@@ -119,15 +119,15 @@ def login(settings=None, key=None) -> bool:
                 return True
             if ok is None:
                 raise ConnectionError(
-                    f"cannot reach the mlop server at {base} ({problem}). "
-                    "Start one with `mini-mlop-server`, or point MLOP_URL / "
+                    f"cannot reach the mini-mlop server at {base} ({problem}). "
+                    "Start one with `mini-mlop-server`, or point MINI_MLOP_URL / "
                     'settings={"url": ...} at a running server.'
                 )
             if not _interactive() or attempt == MAX_PROMPTS:
                 raise PermissionError(
-                    f"the mlop server at {base} did not accept "
+                    f"the mini-mlop server at {base} did not accept "
                     f"{'the API key' if key else 'a request without an API key'}. "
-                    "Set MLOP_API_KEY or run `mini-mlop login`; keys are created in "
+                    "Set MINI_MLOP_API_KEY or run `mini-mlop login`; keys are created in "
                     f"the web UI ({settings.url_token}) or with "
                     "`mini-mlop-server keys create NAME`."
                 )

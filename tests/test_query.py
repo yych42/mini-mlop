@@ -116,7 +116,7 @@ def test_get_and_csv(api, two_runs):
 def test_anything_but_reading_is_refused(api, server, two_runs, sql):
     status, body = q(api, sql)
     assert status == 400, body
-    assert "mlop_" not in str(body) and "hash" not in str(body.get("error"))
+    assert "mini_mlop_" not in str(body) and "hash" not in str(body.get("error"))
     # ... and nothing changed
     assert server.store.count_keys() == 1
     assert q(api, "SELECT count(*) FROM runs")[1]["rows"] == [[2]]
@@ -241,7 +241,7 @@ def test_no_query_shape_leaks_another_project(two_projects):
         "SELECT config FROM runs AS main",
         "WITH RECURSIVE runs(config) AS (SELECT config FROM main.runs) SELECT * FROM runs",
         "SELECT * FROM temp.runs, main.runs",
-        "SELECT mlop_project()",
+        "SELECT mini_mlop_project()",
     ]
     for sql in attempts:
         try:
@@ -267,6 +267,6 @@ def test_http_and_cli_accept_a_project(two_projects, api, server):
         [sys.executable, "-m", "mini_mlop", "query", "--url", server.url, "--project", "alpha",
          "--format", "csv", sql],
         capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
-        env={**os.environ, "MLOP_API_KEY": server.key},
+        env={**os.environ, "MINI_MLOP_API_KEY": server.key},
     )
     assert out.stdout == "project,name\nalpha,a1\n", out.stderr

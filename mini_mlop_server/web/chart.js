@@ -1,4 +1,4 @@
-// Canvas charts for the mlop UI: a multi-series line chart with a crosshair
+// Canvas charts for the mini-mlop UI: a multi-series line chart with a crosshair
 // readout, and a histogram. Small on purpose, so nothing has to be bundled.
 
 const tooltip = document.getElementById("tooltip");

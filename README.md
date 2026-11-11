@@ -1,4 +1,4 @@
-<img src="design/favicon.svg" alt="mlop logo" height="72">
+<img src="design/favicon.svg" alt="mini-mlop logo" height="72">
 
 # mini-mlop
 
@@ -41,7 +41,7 @@ pip install git+https://github.com/yych42/mini-mlop.git
 ```
 
 ```bash
-export MLOP_URL=http://your-server:2718
+export MINI_MLOP_URL=http://your-server:2718
 ```
 
 ```bash
@@ -107,8 +107,8 @@ organisations, members and invites; OAuth and e-mail sign-in (auth is by API key
 limits; the hosted code-server launcher; the W&B migration tool; threshold triggers. The interactive
 model-graph view is a plain tree.
 
-Changed in the logger: it talks to one address (`MLOP_URL`) instead of four; keys are kept in
-`~/.config/mlop/credentials.json` instead of the system keyring; `numpy`, `pillow`, `soundfile`
+Changed in the logger: it talks to one address (`MINI_MLOP_URL`) instead of four; keys are kept in
+`~/.config/mini-mlop/credentials.json` instead of the system keyring; `numpy`, `pillow`, `soundfile`
 and the NVIDIA bindings are optional extras (`pip install "mini-mlop[full] @ git+…"`); the import
 name is `mini_mlop`, so it installs alongside upstream `mlop` without clashing. To move an existing
 script over, change its first line to `import mini_mlop as mlop`; the rest of the API is the same.

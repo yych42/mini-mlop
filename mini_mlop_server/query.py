@@ -63,8 +63,8 @@ _SCOPED_SHAPES = {
     "runs": "SELECT r.id, p.name AS project, r.name, r.status, r.stalled, "
     "r.config, r.system, r.created_at, r.heartbeat_at, r.finished_at "
     "FROM main.runs r JOIN main.projects p ON p.id = r.project_id "
-    "WHERE p.name = mlop_project()",
-    "projects": "SELECT id, name, created_at FROM main.projects WHERE name = mlop_project()",
+    "WHERE p.name = mini_mlop_project()",
+    "projects": "SELECT id, name, created_at FROM main.projects WHERE name = mini_mlop_project()",
     "series": "SELECT run_id, name, kind FROM main.series WHERE run_id IN {scope}",
     "metrics": "SELECT s.run_id, s.name, m.step, m.time, m.value "
     "FROM main.metrics m JOIN main.series s ON s.id = m.series_id "
@@ -81,7 +81,7 @@ _SCOPED_SHAPES = {
 }
 _IN_SCOPE = (
     "(SELECT r.id FROM main.runs r JOIN main.projects p ON p.id = r.project_id "
-    "WHERE p.name = mlop_project())"
+    "WHERE p.name = mini_mlop_project())"
 )
 _CATALOGS = {"sqlite_master", "sqlite_schema", "sqlite_temp_master", "sqlite_temp_schema"}
 _EXPLAIN_COLUMNS = (["addr", "opcode"], ["id", "parent", "notused", "detail"])
@@ -320,7 +320,7 @@ class QueryEngine:
         )
         c.execute("PRAGMA cache_size=-2048")  # 2 MiB
         if self.scoped:
-            c.create_function("mlop_project", 0, lambda: self._project, deterministic=True)
+            c.create_function("mini_mlop_project", 0, lambda: self._project, deterministic=True)
             token = secrets.token_hex(16)
             inner = {name: f"v_{token}_{name}" for name in _SCOPED_SHAPES}
             for name, shape in _SCOPED_SHAPES.items():

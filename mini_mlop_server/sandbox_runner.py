@@ -3,7 +3,7 @@
 Run this on a machine that is NOT your mini-mlop server and holds nothing you
 care about, typically a small container:
 
-    MLOP_SANDBOX_TOKEN=some-long-secret python -m mini_mlop_server.sandbox_runner
+    MINI_MLOP_SANDBOX_TOKEN=some-long-secret python -m mini_mlop_server.sandbox_runner
 
 then enter its URL and the token under Settings → Agent → Sandbox.
 
@@ -36,7 +36,7 @@ MAX_BODY = MAX_INPUT_BYTES * 2  # base64 overhead and then some
 
 class Runner(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "mlop-sandbox"
+    server_version = "mini-mlop-sandbox"
     sys_version = ""
     timeout = 60
 
@@ -103,14 +103,14 @@ def main(argv=None):
         description="Runs Python sent by a mini-mlop server's agent. "
         "Put it on a machine that holds nothing you care about.",
     )
-    p.add_argument("--host", default=os.environ.get("MLOP_SANDBOX_HOST", "0.0.0.0"))
+    p.add_argument("--host", default=os.environ.get("MINI_MLOP_SANDBOX_HOST", "0.0.0.0"))
     p.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8700)))
     p.add_argument("--concurrency", type=int, default=2, help="runs at once (default 2)")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args(argv)
-    token = os.environ.get("MLOP_SANDBOX_TOKEN", "")
+    token = os.environ.get("MINI_MLOP_SANDBOX_TOKEN", "")
     if len(token) < 16:
-        sys.exit("set MLOP_SANDBOX_TOKEN to a secret of at least 16 characters")
+        sys.exit("set MINI_MLOP_SANDBOX_TOKEN to a secret of at least 16 characters")
     server = make_runner(args.host, args.port, token, args.concurrency, args.verbose)
     print(f"mini-mlop sandbox runner listening on {args.host}:{server.server_address[1]}", flush=True)
     try:

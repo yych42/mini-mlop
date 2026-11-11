@@ -1,21 +1,21 @@
-# systemd unit for running the mlop server on a Raspberry Pi or any Linux box.
+# systemd unit for running the mini-mlop server on a Raspberry Pi or any Linux box.
 #
-#   sudo useradd --system --create-home --home-dir /var/lib/mlop mlop
-#   sudo -u mlop python3 -m venv /var/lib/mlop/venv
-#   sudo -u mlop /var/lib/mlop/venv/bin/pip install git+https://github.com/yych42/mini-mlop.git
+#   sudo useradd --system --create-home --home-dir /var/lib/mini-mlop mini-mlop
+#   sudo -u mini-mlop python3 -m venv /var/lib/mini-mlop/venv
+#   sudo -u mini-mlop /var/lib/mini-mlop/venv/bin/pip install git+https://github.com/yych42/mini-mlop.git
 #   sudo cp deploy/mini-mlop-server.service /etc/systemd/system/
 #   sudo systemctl enable --now mini-mlop-server
 #   journalctl -u mini-mlop-server | grep key        # the API key, printed on first start
 
 [Unit]
-Description=mlop experiment tracking server
+Description=mini-mlop experiment tracking server
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=mlop
-Environment=MLOP_DATA_DIR=/var/lib/mlop/data
-ExecStart=/var/lib/mlop/venv/bin/mini-mlop-server
+User=mini-mlop
+Environment=MINI_MLOP_DATA_DIR=/var/lib/mini-mlop/data
+ExecStart=/var/lib/mini-mlop/venv/bin/mini-mlop-server
 Restart=on-failure
 RestartSec=3
 
@@ -24,7 +24,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/mlop
+ReadWritePaths=/var/lib/mini-mlop
 
 [Install]
 WantedBy=multi-user.target

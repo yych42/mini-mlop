@@ -7,6 +7,8 @@ import subprocess
 import sys
 from urllib.parse import urlsplit
 
+import urllib.error
+
 import pytest
 
 from mini_mlop_server import store as store_module
@@ -45,7 +47,7 @@ def test_health_is_public(server):
 )
 def test_everything_else_needs_a_key(server, method, path):
     body = b"{}" if method in ("POST", "PUT") else None
-    for key in (None, "mlop_not-a-real-key"):
+    for key in (None, "mini_mlop_not-a-real-key"):
         status, _ = Api(server.url).request(method, path, body, key=key)
         assert status == 401, (method, path, key)
 
@@ -80,7 +82,7 @@ def test_browser_session_cookie(server):
 
 def test_key_management(api, server):
     _, made = api.post("/api/keys", {"name": "laptop"})
-    assert made["key"].startswith("mlop_")
+    assert made["key"].startswith("mini_mlop_")
     assert Api(server.url, made["key"]).get("/api/projects")[0] == 200
 
     _, listing = api.get("/api/keys")
@@ -272,7 +274,7 @@ def test_file_names_cannot_escape_the_data_directory(api, server):
     for root, _, names in os.walk(server.store.dir):
         stored += [os.path.join(root, n) for n in names]
     inside = os.path.join(server.store.files_dir, str(run_id))
-    blobs = [p for p in stored if not os.path.basename(p).startswith("mlop.db")]
+    blobs = [p for p in stored if not os.path.basename(p).startswith("mini-mlop.db")]
     assert blobs and all(os.path.dirname(p) == inside for p in blobs)
     assert all(os.path.basename(p).split(".")[0].isdigit() for p in blobs)
 
@@ -289,8 +291,13 @@ def test_upload_size_limit(tmp_path):
             {"files": [{"fileName": "big.bin", "fileSize": 1, "fileType": "bin", "logName": "a"}]},
             headers={"X-Run-Id": str(run_id)},
         )
-        status, _ = api.request("PUT", urls["a"][0]["big.bin"], b"x" * (2 * 2**20))
-        assert status == 413
+        # The server answers 413 and hangs up without reading the body, so a
+        # client still sending may see the reset instead of the status.
+        try:
+            status, _ = api.request("PUT", urls["a"][0]["big.bin"], b"x" * (2 * 2**20))
+            assert status == 413
+        except (urllib.error.URLError, ConnectionError):
+            pass
         assert api.get(f"/api/runs/{run_id}/files?name=a")[1]["files"] == []
     finally:
         server.shutdown()
@@ -409,7 +416,7 @@ def test_cli_key_commands(tmp_path):
         )
 
     key = cli("create", "ci").stdout.strip()
-    assert key.startswith("mlop_")
+    assert key.startswith("mini_mlop_")
     assert "ci" in cli("list").stdout and key not in cli("list").stdout
     cli("revoke", "1")
     assert "no keys yet" in cli("list").stdout

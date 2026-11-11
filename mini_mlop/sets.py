@@ -56,10 +56,10 @@ class Settings:
     x_grad_label: str = "grad"
     x_param_label: str = "param"
 
-    # Where the mlop server lives. One server, one address:
+    # Where the mini-mlop server lives. One server, one address:
     #   url   full base URL, e.g. "http://pi.local:2718"
     #   host  shorthand for "http://<host>:2718"
-    # With neither set, the MLOP_URL environment variable is used.
+    # With neither set, the MINI_MLOP_URL environment variable is used.
     url: str = None
     host: str = None
     url_view: str = None
@@ -87,7 +87,7 @@ class Settings:
         self.project = self.tag
         self.meta = []
         self.message = queue.Queue()
-        self._auth = os.environ.get("MLOP_API_KEY") or None
+        self._auth = os.environ.get("MINI_MLOP_API_KEY") or None
 
     def __getattr__(self, name):
         if name in self._url_routes:
@@ -105,7 +105,7 @@ class Settings:
             if host.count(":") < 2:  # no explicit port
                 host = f"{host}:{DEFAULT_PORT}"
             return host
-        env = os.environ.get("MLOP_URL")
+        env = os.environ.get("MINI_MLOP_URL")
         if env:
             env = env.rstrip("/")
             return env if "://" in env else f"http://{env}"
@@ -123,7 +123,7 @@ class Settings:
     def get_dir(self) -> str:
         return os.path.join(
             self.dir,
-            "." + self.tag,
+            ".mini-mlop",
             self.project,
             self._op_name,  # str(self._op_id)
         )

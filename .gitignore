@@ -14,4 +14,4 @@ build/
 .env
 
 # run directories the client writes next to your script
-.mlop
+.mini-mlop

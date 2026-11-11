@@ -22,11 +22,11 @@ In order of precedence:
 
 1. `mlop.init(settings={"url": "http://pi.local:2718"})`
 2. `mlop.init(settings={"host": "pi.local"})` — shorthand for port 2718
-3. the `MLOP_URL` environment variable
+3. the `MINI_MLOP_URL` environment variable
 4. `http://localhost:2718`
 
-The API key comes from `settings={"_auth": ...}`, then `MLOP_API_KEY`, then whatever `mini-mlop login`
-saved for that server in `~/.config/mlop/credentials.json` (mode 0600, one key per server
+The API key comes from `settings={"_auth": ...}`, then `MINI_MLOP_API_KEY`, then whatever `mini-mlop login`
+saved for that server in `~/.config/mini-mlop/credentials.json` (mode 0600, one key per server
 address). In a terminal or notebook you are prompted when none of those works; in a batch job you
 get a `PermissionError` that says what to set. An unreachable server raises `ConnectionError`
 from `mlop.init()` rather than failing silently later.
@@ -97,5 +97,5 @@ Pass a dict as `settings=`. The ones most worth knowing:
 | `x_log_level` | `16` | Python logging level for the logger's own messages |
 | `http_proxy`, `https_proxy`, `insecure_disable_ssl` | | Network plumbing |
 
-Each run also writes a small directory under `./.mlop/<project>/<run>/` (staged files and local
+Each run also writes a small directory under `./.mini-mlop/<project>/<run>/` (staged files and local
 logs); it is safe to delete after the run finishes.

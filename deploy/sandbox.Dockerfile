@@ -10,5 +10,5 @@ RUN useradd --create-home --uid 1000 runner
 USER runner
 ENV PYTHONUNBUFFERED=1 PORT=8700
 EXPOSE 8700
-# MLOP_SANDBOX_TOKEN must be set at run time.
+# MINI_MLOP_SANDBOX_TOKEN must be set at run time.
 ENTRYPOINT ["python", "-m", "mini_mlop_server.sandbox_runner"]

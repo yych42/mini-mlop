@@ -268,7 +268,7 @@ def test_sandbox_reports_failures_and_timeouts():
 def test_sandbox_does_not_inherit_the_environment(monkeypatch):
     monkeypatch.setenv("SECRET_THING", "hunter2")
     out = sandbox.execute("import os\nprint(os.environ.get('SECRET_THING'), os.getcwd())")
-    assert out["stdout"].startswith("None ") and "mlop-sandbox-" in out["stdout"]
+    assert out["stdout"].startswith("None ") and "mini-mlop-sandbox-" in out["stdout"]
 
 
 def test_sandbox_output_is_capped_and_file_names_checked():

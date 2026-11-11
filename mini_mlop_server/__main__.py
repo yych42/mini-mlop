@@ -10,7 +10,7 @@ from . import __version__
 from .app import Config, make_server
 from .store import Store
 
-DEFAULT_DATA = os.path.join("~", ".mlop", "server")
+DEFAULT_DATA = os.path.join("~", ".mini-mlop", "server")
 
 
 def _env_int(name, default):
@@ -23,14 +23,14 @@ def _env_int(name, default):
 def build_parser():
     p = argparse.ArgumentParser(
         prog="mini-mlop-server",
-        description="mlop experiment tracking server: one process, one data directory.",
+        description="mini-mlop experiment tracking server: one process, one data directory.",
     )
     p.add_argument("--version", action="version", version=f"mini-mlop-server {__version__}")
     p.add_argument(
         "--data",
-        default=os.environ.get("MLOP_DATA_DIR", DEFAULT_DATA),
+        default=os.environ.get("MINI_MLOP_DATA_DIR", DEFAULT_DATA),
         help="directory holding the database and uploaded files "
-        "(env MLOP_DATA_DIR, default %(default)s)",
+        "(env MINI_MLOP_DATA_DIR, default %(default)s)",
     )
     sub = p.add_subparsers(dest="command")
 
@@ -45,26 +45,26 @@ def build_parser():
 
         opt(
             "--host",
-            default=os.environ.get("MLOP_HOST", "0.0.0.0"),
-            help="address to listen on (env MLOP_HOST, default 0.0.0.0)",
+            default=os.environ.get("MINI_MLOP_HOST", "0.0.0.0"),
+            help="address to listen on (env MINI_MLOP_HOST, default 0.0.0.0)",
         )
         opt(
             "--port",
             type=int,
-            default=_env_int("MLOP_PORT", 2718),
-            help="port to listen on (env MLOP_PORT, default 2718)",
+            default=_env_int("MINI_MLOP_PORT", 2718),
+            help="port to listen on (env MINI_MLOP_PORT, default 2718)",
         )
         opt(
             "--no-auth",
             action="store_true",
-            default=os.environ.get("MLOP_NO_AUTH", "") not in ("", "0", "false"),
+            default=os.environ.get("MINI_MLOP_NO_AUTH", "") not in ("", "0", "false"),
             help="accept requests without an API key; only for networks you trust",
         )
         opt(
             "--public-url",
-            default=os.environ.get("MLOP_PUBLIC_URL"),
+            default=os.environ.get("MINI_MLOP_PUBLIC_URL"),
             help="URL users reach this server at, used in run links "
-            "(env MLOP_PUBLIC_URL, default: taken from each request)",
+            "(env MINI_MLOP_PUBLIC_URL, default: taken from each request)",
         )
         opt(
             "--stale-after",

@@ -1,7 +1,7 @@
 """Log a few synthetic training runs so there is something to look at.
 
     mini-mlop-server                      # in one terminal
-    python examples/demo.py          # in another (set MLOP_API_KEY or `mini-mlop login` first)
+    python examples/demo.py          # in another (set MINI_MLOP_API_KEY or `mini-mlop login` first)
 
 Needs numpy and pillow for the histogram/image parts: pip install "mini-mlop[media]"
 """

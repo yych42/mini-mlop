@@ -89,14 +89,14 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="commands")
 
     for name, text in (
-        ("login", "save an API key for an mlop server"),
-        ("logout", "forget the saved API key for an mlop server"),
+        ("login", "save an API key for a mini-mlop server"),
+        ("logout", "forget the saved API key for a mini-mlop server"),
     ):
         p = subparsers.add_parser(name, help=text)
         if name == "login":
             p.add_argument("key", nargs="?", help="API key")
         p.add_argument(
-            "--url", help="server address (default: $MLOP_URL or http://localhost:2718)"
+            "--url", help="server address (default: $MINI_MLOP_URL or http://localhost:2718)"
         )
     qp = subparsers.add_parser(
         "query",
@@ -108,9 +108,9 @@ def main():
     qp.add_argument("--limit", type=int, default=1000, help="most rows to return (default 1000)")
     qp.add_argument("--project", help="confine the query to one project")
     qp.add_argument(
-        "--url", help="server address (default: $MLOP_URL or http://localhost:2718)"
+        "--url", help="server address (default: $MINI_MLOP_URL or http://localhost:2718)"
     )
-    subparsers.add_parser("server", help="run the mlop server (same as `mini-mlop-server`)")
+    subparsers.add_parser("server", help="run the mini-mlop server (same as `mini-mlop-server`)")
 
     args = parser.parse_args()
     settings = {"url": args.url} if getattr(args, "url", None) else {}
@@ -119,7 +119,7 @@ def main():
         try:
             login(settings=settings, key=args.key)
         except (ConnectionError, PermissionError) as e:
-            sys.exit(f"mlop: {e}")
+            sys.exit(f"mini-mlop: {e}")
         except KeyboardInterrupt:
             sys.exit(1)
     elif args.command == "logout":
