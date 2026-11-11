@@ -1,0 +1,46 @@
+# Fly.io deployment of the mini-mlop server, set up as a cheap test server:
+# the smallest machine, suspended when idle, woken by the next request.
+# Steps are in docs/server.md under "Fly.io".
+
+app = "mini-mlop"          # must be unique on Fly; change it or let `fly launch` pick one
+primary_region = "iad"     # `fly platform regions` lists the others
+
+[build]
+  dockerfile = "deploy/fly.Dockerfile"
+
+[env]
+  MINI_MLOP_DATA_DIR = "/data"
+
+# Database, uploads and the key file live here and survive deploys and restarts.
+[mounts]
+  source = "mini_mlop_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 2718
+  force_https = true
+  # With no traffic for a few minutes, Fly's proxy suspends the machine
+  # (memory snapshot; resumes in well under a second on the next request).
+  # Use "stop" instead for a full shutdown and a ~1-2 s cold start.
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 250
+
+  # Health checks do not count as traffic, so they don't keep the machine awake.
+  [[http_service.checks]]
+    method = "GET"
+    path = "/api/health"
+    interval = "30s"
+    timeout = "3s"
+    grace_period = "5s"
+
+# Smallest machine Fly offers. The server idles at ~25 MB.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
