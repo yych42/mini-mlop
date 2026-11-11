@@ -238,7 +238,7 @@ class QueryError(Exception):
 def describe():
     return {
         "dialect": "SQLite %s" % sqlite3.sqlite_version,
-        "endpoint": "POST /api/query with JSON {sql, params?, limit?, format?} "
+        "endpoint": "POST /api/query with JSON {sql, params?, limit?, format?, project?} "
         "or GET /api/query?sql=...; format is json (default) or csv",
         "notes": [
             "Read-only: one SELECT (or WITH ... SELECT) statement per request.",
@@ -250,6 +250,9 @@ def describe():
             "Always filter metrics by run_id and name; aggregate in SQL instead "
             "of fetching every point.",
             "Bind values with ? or :name placeholders via params.",
+            "Projects are unrelated to each other. SELECT name FROM projects lists "
+            "them; pass project to confine a query to one, so every table holds only "
+            "that project's rows.",
         ],
         "limits": {
             "default_rows": DEFAULT_ROWS,

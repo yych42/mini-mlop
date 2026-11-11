@@ -40,6 +40,7 @@ errors from logs).
 | `params` | optional | List for `?` placeholders, or object for `:name` placeholders |
 | `limit` | optional | Most rows to return; default 1000, at most 50000 |
 | `format` | optional | `json` (default) or `csv` |
+| `project` | optional | Confine the query to one project; `SELECT name FROM projects` lists them |
 
 `GET /api/query?sql=…&limit=…&format=…` does the same for quick use.
 
@@ -76,7 +77,8 @@ rest of the API gives.
 ## MCP
 
 The server speaks the Model Context Protocol at `/mcp` (Streamable HTTP, JSON responses), with
-two tools: `schema` and `query`. Authenticate with an API key as a bearer token.
+three tools: `projects` (which projects exist), `schema` and `query` (with an optional `project`
+argument). Authenticate with an API key as a bearer token.
 
 ```bash
 claude mcp add --transport http mini-mlop http://your-server:2718/mcp \
@@ -104,8 +106,9 @@ project conversation every table holds only that project's rows, so the assistan
 another project's runs by accident or by being told to. Choose **All projects** in the picker for
 questions that span projects. Conversations are listed under the project they belong to.
 
-The MCP endpoint, the `mini-mlop query` command and the Query page are not confined: they see
-every project, like the rest of the API.
+The MCP endpoint, the `mini-mlop query` command and the HTTP endpoint see every project unless
+you name one, in which case they are confined the same way: the `project` argument of the MCP
+`query` tool, `mini-mlop query --project NAME`, or `"project": "NAME"` in the request body.
 
 ### Model providers
 

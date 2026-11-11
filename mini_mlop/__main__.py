@@ -26,6 +26,8 @@ def _query(args):
         else:
             sql = sys.stdin.read() if args.sql == "-" else args.sql
             body = {"sql": sql, "limit": args.limit}
+            if args.project:
+                body["project"] = args.project
             r = httpx.post(f"{base}/api/query", json=body, headers=headers, timeout=60)
     except httpx.HTTPError as e:
         sys.exit(f"mini-mlop: cannot reach the server at {base} ({e})")
@@ -104,6 +106,7 @@ def main():
     qp.add_argument("--schema", action="store_true", help="print tables, columns and examples")
     qp.add_argument("--format", choices=("table", "csv", "json"), default="table")
     qp.add_argument("--limit", type=int, default=1000, help="most rows to return (default 1000)")
+    qp.add_argument("--project", help="confine the query to one project")
     qp.add_argument(
         "--url", help="server address (default: $MLOP_URL or http://localhost:2718)"
     )

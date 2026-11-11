@@ -249,3 +249,24 @@ def test_no_query_shape_leaks_another_project(two_projects):
         except query_module.QueryError as e:
             out = str(e)
         assert "beta" not in out and "b1" not in out and f"run {b}" not in out, sql
+
+
+def test_http_and_cli_accept_a_project(two_projects, api, server):
+    import os
+    import subprocess
+    import sys
+
+    sql = "SELECT project, name FROM runs ORDER BY id"
+    assert api.post("/api/query", {"sql": sql})[1]["rows"] == [["alpha", "a1"], ["beta", "b1"]]
+    assert api.post("/api/query", {"sql": sql, "project": "beta"})[1]["rows"] == [["beta", "b1"]]
+    assert api.get("/api/query?sql=SELECT%20name%20FROM%20projects&project=alpha")[1]["rows"] == [["alpha"]]
+    assert api.post("/api/query", {"sql": "SELECT name FROM projects ORDER BY name"})[1]["rows"] == [["alpha"], ["beta"]]
+    status, body = api.post("/api/query", {"sql": sql, "project": "nope"})
+    assert status == 400 and "no such project" in body["error"]
+    out = subprocess.run(
+        [sys.executable, "-m", "mini_mlop", "query", "--url", server.url, "--project", "alpha",
+         "--format", "csv", sql],
+        capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+        env={**os.environ, "MLOP_API_KEY": server.key},
+    )
+    assert out.stdout == "project,name\nalpha,a1\n", out.stderr

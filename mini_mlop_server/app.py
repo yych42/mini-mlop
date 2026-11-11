@@ -716,9 +716,13 @@ def stats(h):
 # -- open-ended read access: SQL -------------------------------------------
 
 
-def _run_query(h, sql, params, limit, fmt):
+def _run_query(h, sql, params, limit, fmt, project=None):
+    if project is not None and (
+        not isinstance(project, str) or not h.store.project_exists(project)
+    ):
+        raise HTTPError(400, "no such project; SELECT name FROM projects lists them")
     try:
-        result = h.store.sql.run(sql, params, limit)
+        result = h.store.query(sql, params, limit, project=project)
     except QueryError as e:
         raise HTTPError(400, str(e))
     if fmt == "csv":
@@ -742,7 +746,7 @@ def query_schema(h):
 def query_get(h):
     if h.arg("sql") is None:
         return h.send_json(describe_query())
-    _run_query(h, h.arg("sql"), None, h.arg("limit"), h.arg("format"))
+    _run_query(h, h.arg("sql"), None, h.arg("limit"), h.arg("format"), h.arg("project"))
 
 
 @route("POST", "/api/query")
@@ -750,7 +754,7 @@ def query_post(h):
     body = h.read_json()
     _run_query(
         h, body.get("sql"), body.get("params"), body.get("limit"),
-        body.get("format") or h.arg("format"),
+        body.get("format") or h.arg("format"), body.get("project"),
     )
 
 

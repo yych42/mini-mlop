@@ -105,7 +105,7 @@ Read by the UI (and usable from scripts):
 | `POST /api/runs/<id>/stop`, `DELETE /api/runs/<id>`, `DELETE /api/projects/<name>` | |
 | `GET/POST /api/keys`, `DELETE /api/keys/<id>`, `GET /api/stats`, `GET /api/me` | |
 | `GET/POST /api/query`, `GET /api/query/schema` | Read-only SQL; see [agents.md](agents.md) |
-| `POST /mcp` | Model Context Protocol (tools: `schema`, `query`) |
+| `POST /mcp` | Model Context Protocol (tools: `projects`, `schema`, `query`) |
 | `GET/PUT /api/agent/config`, `GET /api/agent/models` | Assistant settings |
 | `POST /api/chat`, `GET /api/chats`, `GET/DELETE /api/chats/<id>` | Assistant conversations; `POST` streams NDJSON events |
 

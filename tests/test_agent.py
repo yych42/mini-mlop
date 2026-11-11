@@ -353,7 +353,7 @@ def test_mcp_handshake_and_tools(api, runs):
     assert rpc(api, "ping")[1]["result"] == {}
 
     tools = rpc(api, "tools/list")[1]["result"]["tools"]
-    assert [t["name"] for t in tools] == ["schema", "query"]
+    assert [t["name"] for t in tools] == ["projects", "schema", "query"]
     assert all(t["inputSchema"]["type"] == "object" for t in tools)
 
     schema = rpc(api, "tools/call", {"name": "schema", "arguments": {}})[1]["result"]
@@ -439,3 +439,30 @@ def test_sandbox_inputs_respect_the_project(api, provider):
     ask(api, "go", project="alpha")
     sent = json.dumps(provider.requests[-1]["body"])
     assert "alpha,a1" in sent and "beta" not in sent
+
+
+def test_mcp_lists_projects_and_confines_queries(api):
+    call = lambda name, **args: rpc(api, "tools/call", {"name": name, "arguments": args})[1]["result"]  # noqa: E731
+    assert "no projects yet" in call("projects")["content"][0]["text"]
+    api.new_run(project="alpha", name="a1")
+    api.new_run(project="alpha", name="a2")
+    api.new_run(project="beta", name="b1")
+
+    listing = call("projects")["content"][0]["text"].splitlines()
+    assert listing[0] == "name,runs,running,last_active_utc"
+    assert sorted(line.split(",")[:3] for line in listing[1:]) == [["alpha", "2", "2"], ["beta", "1", "1"]]
+
+    sql = "SELECT project, name FROM runs ORDER BY id"
+    everything = call("query", sql=sql)["content"][0]["text"]
+    assert "alpha,a1" in everything and "beta,b1" in everything
+    scoped = call("query", sql=sql, project="beta")
+    assert scoped["isError"] is False
+    text = scoped["content"][0]["text"]
+    assert text.startswith("project,name\nbeta,b1\n") and "alpha" not in text
+    assert "project 'beta' only" in text
+    assert "name\nbeta\n" in call("query", sql="SELECT name FROM projects", project="beta")["content"][0]["text"]
+
+    escape = call("query", sql="SELECT * FROM main.runs", project="beta")
+    assert escape["isError"] is True and "alpha" not in escape["content"][0]["text"]
+    missing = call("query", sql=sql, project="nope")
+    assert missing["isError"] is True and "Call `projects`" in missing["content"][0]["text"]
