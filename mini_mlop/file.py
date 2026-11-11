@@ -357,5 +357,5 @@ def make_compat_image_numpy(val: any) -> any:
     val = val.clip(0, 255).astype(np.uint8)
 
     PILImage = require("PIL.Image", "logging images")
-    image = PILImage.fromarray(val, mode="RGBA" if val.shape[-1] == 4 else "RGB")
+    image = PILImage.fromarray(val)  # mode follows the shape: HxW, HxWx3 or HxWx4
     return image

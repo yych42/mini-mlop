@@ -388,7 +388,7 @@ class QueryEngine:
                     size += sum(_size(v) for v in row)
                     rows.append(row)
                 cur.close()
-            except sqlite3.Error as e:
+            except (sqlite3.Error, sqlite3.Warning) as e:  # Warning: multi-statement on older Pythons
                 raise QueryError(self._explain(e)) from None
             except (ValueError, OverflowError) as e:  # bad bind values, NUL bytes
                 raise QueryError(str(e)) from None
