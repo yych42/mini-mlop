@@ -95,6 +95,18 @@ ran so the answer can be checked. It is read-only: it cannot stop, change or del
 
 Set it up under **Settings → Assistant**: pick a provider, paste a key, choose a model.
 
+### One project at a time
+
+A conversation is confined to one project. It starts in the project you are looking at (the
+project picker at the top of the panel shows which), and stays there even if you browse
+elsewhere. The confinement is enforced by the server, not requested in the prompt: inside a
+project conversation every table holds only that project's rows, so the assistant cannot read
+another project's runs by accident or by being told to. Choose **All projects** in the picker for
+questions that span projects. Conversations are listed under the project they belong to.
+
+The MCP endpoint, the `mini-mlop query` command and the Query page are not confined: they see
+every project, like the rest of the API.
+
 ### Model providers
 
 | Provider | Wire format | Notes |

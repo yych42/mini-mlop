@@ -3,7 +3,8 @@
 // produces is ever treated as HTML.
 
 let h, put, api, Unauthorized, onUnauthorized;
-let panel, log, input, sendButton, picker, chatId = null, busy = false;
+let panel, log, input, sendButton, picker, scopePicker, chatId = null, busy = false;
+let scope = null;  // project a new conversation is confined to; null = all projects
 
 export function initAgent(deps) {
   ({ h, put, api, Unauthorized, onUnauthorized } = deps);
@@ -13,6 +14,13 @@ export function initAgent(deps) {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && panel && !panel.hidden) toggle(false);
+  });
+  // Moving to another project starts from that project, unless a conversation is open.
+  window.addEventListener("hashchange", async () => {
+    if (!panel || panel.hidden || chatId || busy) return;
+    await followPage();
+    greet();
+    loadChats().catch(() => {});
   });
 }
 
@@ -101,17 +109,42 @@ function addMessage(role, ...kids) {
 
 function greet() {
   put(log, h("div", { class: "msg hint" },
-    h("p", {}, "Ask about your runs. The assistant reads the data with SQL and cannot change anything."),
+    h("p", {}, scope === null
+      ? "Ask about your runs across all projects. The assistant reads the data with SQL and cannot change anything."
+      : ["Ask about the runs in ", h("strong", {}, scope), ". The assistant sees only this project, reads the data with SQL and cannot change anything."]),
     h("ul", {}, ["Which run in this project has the best validation loss?",
       "Did the loss change significantly after step 1000?",
       "Summarise what went wrong in this run."].map((q) =>
       h("li", {}, h("button", { type: "button", class: "linklike", onclick: () => { input.value = q; input.focus(); } }, q))))));
 }
 
+// The project shown on the current page, or null.
+async function pageProject() {
+  const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  if (parts[0] === "projects" && parts[1]) return parts[1];
+  if (parts[0] === "runs" && /^\d+$/.test(parts[1] || "")) {
+    try { return (await api(`/api/runs/${parts[1]}`)).project || null; } catch { return null; }
+  }
+  return null;
+}
+
+async function loadScopes() {
+  const { projects } = await api("/api/projects");
+  const names = projects.map((p) => p.name);
+  if (scope !== null && !names.includes(scope)) scope = null;
+  put(scopePicker, h("option", { value: "" }, "All projects"), names.map((n) => h("option", { value: `p:${n}` }, n)));
+  scopePicker.value = scope === null ? "" : `p:${scope}`;
+}
+
+async function followPage() {
+  scope = await pageProject();
+  await loadScopes();
+}
+
 async function loadChats() {
   const { chats } = await api("/api/chats");
   put(picker, h("option", { value: "" }, "New conversation"),
-    chats.map((c) => h("option", { value: String(c.id) }, c.title)));
+    chats.filter((c) => (c.project ?? null) === scope).map((c) => h("option", { value: String(c.id) }, c.title)));
   picker.value = chatId ? String(chatId) : "";
 }
 
@@ -119,6 +152,8 @@ async function openChat(id) {
   chatId = id || null;
   if (!chatId) return greet();
   const chat = await api(`/api/chats/${chatId}`);
+  scope = chat.project ?? null;
+  scopePicker.value = scope === null ? "" : `p:${scope}`;
   put(log);
   for (const m of chat.messages) {
     if (m.role === "user") addMessage("user", m.text);
@@ -137,7 +172,7 @@ async function send(text) {
   try {
     const res = await fetch("/api/chat", {
       method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, chat_id: chatId, context: { route: location.hash } }),
+      body: JSON.stringify({ message: text, chat_id: chatId, project: scope, context: { route: location.hash } }),
     });
     if (res.status === 401) return onUnauthorized();
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `request failed (${res.status})`);
@@ -180,13 +215,19 @@ async function build() {
   input = h("textarea", { rows: 2, placeholder: "Ask about your runs…", "aria-label": "Message" });
   sendButton = h("button", { class: "primary", type: "submit" }, "Send");
   picker = h("select", { "aria-label": "Conversation", onchange: () => openChat(+picker.value || null) });
+  scopePicker = h("select", { "aria-label": "Project", title: "The project this conversation can see", onchange: () => {
+    scope = scopePicker.value ? scopePicker.value.slice(2) : null;
+    chatId = null;
+    greet();
+    loadChats();
+  } });
   const form = h("form", { class: "agent-form", onsubmit: (e) => { e.preventDefault(); const t = input.value; input.value = ""; send(t); } },
     input, sendButton);
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
   });
   panel = h("aside", { id: "agent", "aria-label": "Assistant" },
-    h("div", { class: "agent-head" }, h("strong", {}, "Ask"), picker, h("span", { class: "grow" }),
+    h("div", { class: "agent-head" }, h("strong", {}, "Ask"), scopePicker, picker, h("span", { class: "grow" }),
       h("button", { type: "button", title: "Delete this conversation", onclick: async () => {
         if (!chatId || !confirm("Delete this conversation?")) return;
         await api(`/api/chats/${chatId}`, { method: "DELETE" });
@@ -212,6 +253,7 @@ async function toggle(force) {
       return;
     }
     sendButton.disabled = busy;
+    if (!chatId && !busy) await followPage(); else await loadScopes();
     if (!log.childNodes.length || log.querySelector(".hint")) await openChat(chatId);
     await loadChats();
     input.focus();

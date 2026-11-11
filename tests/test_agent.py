@@ -378,3 +378,64 @@ def test_mcp_protocol_errors(api):
     ])
     assert status == 200 and out == [{"jsonrpc": "2.0", "id": 1, "result": {}}]
     assert api.request("GET", "/mcp", raw=True)[0] == 405
+
+
+# -- project scope ---------------------------------------------------------------
+
+
+def test_conversations_are_confined_to_a_project(api, server, provider):
+    a = api.new_run(project="alpha", name="a1")
+    b = api.new_run(project="beta", name="b1")
+    configure(api, provider)
+    everything = "SELECT project, name FROM runs ORDER BY id"
+
+    # started from a page in project alpha: the model sees alpha only
+    provider.say(calls=[("c1", "query", {"sql": everything})])
+    provider.say("Only a1.")
+    events = ask(api, "what runs are there?", context={"route": f"#/runs/{a}"})
+    assert events[0]["project"] == "alpha"
+    second = json.dumps(provider.requests[-1]["body"])
+    assert "alpha,a1" in second and "beta" not in second
+    first = json.dumps(provider.requests[-2]["body"])
+    assert "confined to the project" in first and "alpha" in first
+
+    # the scope sticks even when the user has wandered to another project
+    provider.say(calls=[("c2", "query", {"sql": everything})])
+    provider.say("Still only a1.")
+    ask(api, "and now?", chat_id=events[0]["id"], context={"route": f"#/runs/{b}"})
+    assert "b1" not in json.dumps(provider.requests[-1]["body"])
+
+    # asked for explicitly
+    provider.say(calls=[("c3", "query", {"sql": everything})])
+    provider.say("b1.")
+    events = ask(api, "runs?", project="beta", context={"route": f"#/runs/{a}"})
+    assert events[0]["project"] == "beta"
+    sent = json.dumps(provider.requests[-1]["body"])
+    assert "beta,b1" in sent and "alpha" not in sent
+
+    # all projects, on request
+    provider.say(calls=[("c4", "query", {"sql": everything})])
+    provider.say("Two.")
+    events = ask(api, "runs?", project=None, context={"route": f"#/runs/{a}"})
+    assert events[0]["project"] is None
+    sent = json.dumps(provider.requests[-1]["body"])
+    assert "alpha,a1" in sent and "beta,b1" in sent
+
+    status, _, _ = api.request("POST", "/api/chat", {"message": "x", "project": "nope"}, raw=True)
+    assert status == 400
+    projects = {c["project"] for c in api.get("/api/chats")[1]["chats"]}
+    assert projects == {"alpha", "beta", None}
+
+
+def test_sandbox_inputs_respect_the_project(api, provider):
+    api.new_run(project="alpha", name="a1")
+    api.new_run(project="beta", name="b1")
+    configure(api, provider, provider="local")
+    provider.say(calls=[("c1", "run_python", {
+        "code": "print(open('r.csv').read())",
+        "inputs": [{"name": "r.csv", "sql": "SELECT project, name FROM runs"}],
+    })])
+    provider.say("done")
+    ask(api, "go", project="alpha")
+    sent = json.dumps(provider.requests[-1]["body"])
+    assert "alpha,a1" in sent and "beta" not in sent

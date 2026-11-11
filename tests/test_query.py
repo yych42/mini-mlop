@@ -143,3 +143,109 @@ def test_queries_see_fresh_writes(api):
     assert q(api, "SELECT count(*) FROM runs")[1]["rows"] == [[0]]
     api.new_run()
     assert q(api, "SELECT count(*) FROM runs")[1]["rows"] == [[1]]
+
+
+# -- project scope (used by the built-in assistant) ------------------------------
+
+
+@pytest.fixture
+def two_projects(api, server):
+    a = api.new_run(project="alpha", name="a1", config={"secret": "alpha-only"})
+    b = api.new_run(project="beta", name="b1", config={"secret": "beta-only"})
+    for run, scale in ((a, 1.0), (b, 5.0)):
+        api.ingest("metrics", run, metric_lines(10, scale=scale))
+        api.ingest("logs", run, [{"time": 1, "message": f"log of run {run}", "lineNumber": 1, "logType": "INFO"}])
+    return server.store, a, b
+
+
+def test_scoped_queries_see_one_project(two_projects):
+    store, a, b = two_projects
+    rows = lambda sql, project: store.query(sql, project=project)["rows"]  # noqa: E731
+    assert rows("SELECT id, project, name FROM runs", "alpha") == [[a, "alpha", "a1"]]
+    assert rows("SELECT id FROM runs", "beta") == [[b]]
+    assert rows("SELECT name FROM projects", "alpha") == [["alpha"]]
+    assert rows("SELECT DISTINCT run_id FROM metrics", "alpha") == [[a]]
+    assert rows("SELECT max(value) FROM metrics WHERE name = 'loss'", "beta") == [[45.0]]
+    assert rows(f"SELECT count(*) FROM metrics WHERE run_id = {b}", "alpha") == [[0]]
+    assert rows("SELECT DISTINCT run_id FROM series", "alpha") == [[a]]
+    assert rows("SELECT message FROM logs", "alpha") == [[f"log of run {a}"]]
+    assert rows("SELECT count(*) FROM runs", "no-such-project") == [[0]]
+    # unscoped queries still see everything
+    assert store.query("SELECT count(*) FROM runs")["rows"] == [[2]]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM main.runs",
+        "SELECT config FROM main.runs WHERE id = 2",
+        "SELECT * FROM main.metrics",
+        "SELECT * FROM main.series",
+        "SELECT * FROM main.logs",
+        "SELECT * FROM main.projects",
+        "SELECT (SELECT group_concat(config) FROM main.runs) FROM runs",
+        "WITH x AS (SELECT * FROM main.runs) SELECT * FROM x",
+        "WITH runs AS (SELECT * FROM main.runs) SELECT * FROM runs",
+        "WITH metrics AS (SELECT * FROM main.metrics) SELECT * FROM metrics",
+        "SELECT * FROM (SELECT * FROM main.runs) AS runs",
+        "SELECT * FROM runs WHERE id IN (SELECT id FROM main.runs AS runs)",
+        'SELECT * FROM "main"."runs"',
+        "SELECT * FROM main/**/.runs",
+        "SELECT sql FROM sqlite_temp_master",
+        "SELECT sql FROM temp.sqlite_schema",
+        "SELECT * FROM pragma_table_info('runs')",
+        "SELECT * FROM pragma_database_list",
+        "EXPLAIN SELECT * FROM runs",
+        "/* x */ EXPLAIN QUERY PLAN SELECT * FROM runs",
+        "SELECT sql FROM main.sqlite_master",
+        "SELECT * FROM api_keys",
+        "SELECT * FROM settings",
+        "DELETE FROM runs",
+        "DROP VIEW runs",
+    ],
+)
+def test_scope_cannot_be_escaped(two_projects, sql):
+    store, _, _ = two_projects
+    with pytest.raises(query_module.QueryError):
+        store.query(sql, project="alpha")
+    # nor by first preparing the statement without a scope
+    try:
+        store.query(sql)
+    except query_module.QueryError:
+        pass
+    with pytest.raises(query_module.QueryError):
+        store.query(sql, project="alpha")
+
+
+def test_scoped_schema_matches_the_documented_tables(two_projects):
+    store, _, _ = two_projects
+    for table in query_module.TABLES:
+        result = store.query(f"SELECT * FROM {table['name']} LIMIT 1", project="alpha")
+        assert result["columns"] == [c[0] for c in table["columns"]], table["name"]
+    for example in query_module.EXAMPLES:
+        store.query(example["sql"], project="alpha")
+
+
+def test_no_query_shape_leaks_another_project(two_projects):
+    """Whatever a scoped query does, raise or return rows, the other
+    project's data must not appear in what comes back."""
+    store, a, b = two_projects
+    attempts = [
+        "SELECT * FROM runs",
+        "SELECT * FROM runs UNION ALL SELECT * FROM runs",
+        "SELECT r.*, m.* FROM runs r LEFT JOIN metrics m ON 1 = 1",
+        f"SELECT * FROM metrics WHERE run_id = {b}",
+        f"SELECT * FROM logs WHERE run_id = {b} OR 1 = 1",
+        "SELECT * FROM series, data, files, alerts, projects",
+        "SELECT (SELECT config FROM runs ORDER BY id DESC LIMIT 1)",
+        "SELECT config FROM runs AS main",
+        "WITH RECURSIVE runs(config) AS (SELECT config FROM main.runs) SELECT * FROM runs",
+        "SELECT * FROM temp.runs, main.runs",
+        "SELECT mlop_project()",
+    ]
+    for sql in attempts:
+        try:
+            out = str(store.query(sql, project="alpha"))
+        except query_module.QueryError as e:
+            out = str(e)
+        assert "beta" not in out and "b1" not in out and f"run {b}" not in out, sql

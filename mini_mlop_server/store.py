@@ -24,7 +24,7 @@ from contextlib import contextmanager
 
 from .query import QueryEngine
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(
@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS settings(
 CREATE TABLE IF NOT EXISTS chats(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
+    project TEXT,  -- the project the conversation is confined to; NULL = all
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     messages TEXT NOT NULL DEFAULT '[]',
@@ -251,6 +252,7 @@ class Store:
             self._readers.put(c)
 
         self.sql = QueryEngine(self.path)  # opens its connection on first use
+        self.sql_scoped = QueryEngine(self.path, scoped=True)
 
         self._series = {}  # (run_id, name) -> series id
         self._runs = set()  # run ids known to exist
@@ -266,6 +268,9 @@ class Store:
                 f"{self.path} was written by a newer mlop server "
                 f"(schema {version}, this build understands {SCHEMA_VERSION})"
             )
+        columns = [r[1] for r in self._w.execute("PRAGMA table_info(chats)")]
+        if "project" not in columns:  # databases created at schema 2
+            self._w.execute("ALTER TABLE chats ADD COLUMN project TEXT")
         if version < SCHEMA_VERSION:
             self._w.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema', ?)",
@@ -295,6 +300,7 @@ class Store:
 
     def close(self):
         self.sql.close()
+        self.sql_scoped.close()
         with self._lock:
             try:
                 self._w.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -333,19 +339,29 @@ class Store:
             )
         return total
 
-    def create_chat(self, title):
+    def query(self, sql, params=None, limit=None, project=None):
+        """Read-only SQL; with `project`, confined to that project's data."""
+        if project is None:
+            return self.sql.run(sql, params, limit)
+        return self.sql_scoped.run(sql, params, limit, project=project)
+
+    def project_exists(self, name):
+        with self._read() as r:
+            return r.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone() is not None
+
+    def create_chat(self, title, project=None):
         now = now_ms()
         with self._write() as w:
             cur = w.execute(
-                "INSERT INTO chats(title, created_at, updated_at) VALUES(?,?,?)",
-                (str(title)[:120] or "New conversation", now, now),
+                "INSERT INTO chats(title, project, created_at, updated_at) VALUES(?,?,?,?)",
+                (str(title)[:120] or "New conversation", project, now, now),
             )
             return cur.lastrowid
 
     def get_chat(self, chat_id):
         with self._read() as r:
             row = r.execute(
-                "SELECT id, title, created_at, updated_at, messages, usage "
+                "SELECT id, title, project, created_at, updated_at, messages, usage "
                 "FROM chats WHERE id=?",
                 (chat_id,),
             ).fetchone()
@@ -366,7 +382,7 @@ class Store:
     def list_chats(self, limit=50):
         with self._read() as r:
             rows = r.execute(
-                "SELECT id, title, created_at, updated_at FROM chats "
+                "SELECT id, title, project, created_at, updated_at FROM chats "
                 "ORDER BY updated_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()

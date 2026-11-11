@@ -16,6 +16,7 @@ starve the readers that serve the web UI and ingest.
 """
 
 import math
+import secrets
 import sqlite3
 import threading
 import time
@@ -48,6 +49,42 @@ CREATE TEMP VIEW files AS
            f.name AS filename, f.ext, f.size, f.uploaded
     FROM main.files f JOIN main.series s ON s.id = f.series_id;
 """
+
+# The same shapes restricted to one project, for callers that must not see
+# anything else (the built-in assistant working inside a project).
+#
+# How the restriction holds: each public view reads from an inner view that
+# applies the project filter, and the authorizer allows a stored table to be
+# read only when the innermost view doing the reading is one of those inner
+# views. SQLite reports a CTE or subquery alias in the same slot, and a query
+# may name those anything it likes, so the inner views carry a random name
+# chosen per connection and the catalog that would reveal it is unreadable.
+_SCOPED_SHAPES = {
+    "runs": "SELECT r.id, p.name AS project, r.name, r.status, r.stalled, "
+    "r.config, r.system, r.created_at, r.heartbeat_at, r.finished_at "
+    "FROM main.runs r JOIN main.projects p ON p.id = r.project_id "
+    "WHERE p.name = mlop_project()",
+    "projects": "SELECT id, name, created_at FROM main.projects WHERE name = mlop_project()",
+    "series": "SELECT run_id, name, kind FROM main.series WHERE run_id IN {scope}",
+    "metrics": "SELECT s.run_id, s.name, m.step, m.time, m.value "
+    "FROM main.metrics m JOIN main.series s ON s.id = m.series_id "
+    "WHERE s.run_id IN {scope}",
+    "data": "SELECT s.run_id, s.name, s.kind, d.step, d.time, d.body "
+    "FROM main.data d JOIN main.series s ON s.id = d.series_id "
+    "WHERE s.run_id IN {scope}",
+    "files": "SELECT f.id, f.run_id, s.name, f.step, f.time, f.name AS filename, "
+    "f.ext, f.size, f.uploaded FROM main.files f "
+    "JOIN main.series s ON s.id = f.series_id WHERE f.run_id IN {scope}",
+    "logs": "SELECT id, run_id, time, level, message FROM main.logs WHERE run_id IN {scope}",
+    "alerts": "SELECT id, run_id, time, level, title, body FROM main.alerts "
+    "WHERE run_id IN {scope}",
+}
+_IN_SCOPE = (
+    "(SELECT r.id FROM main.runs r JOIN main.projects p ON p.id = r.project_id "
+    "WHERE p.name = mlop_project())"
+)
+_CATALOGS = {"sqlite_master", "sqlite_schema", "sqlite_temp_master", "sqlite_temp_schema"}
+_EXPLAIN_COLUMNS = (["addr", "opcode"], ["id", "parent", "notused", "detail"])
 
 TABLES = [
     {
@@ -229,6 +266,10 @@ def describe():
 def _authorize(action, arg1, arg2, _db, _source):
     if action == _SQLITE_READ:
         return sqlite3.SQLITE_DENY if arg1 in _HIDDEN_TABLES else sqlite3.SQLITE_OK
+    return _authorize_rest(action, arg2)
+
+
+def _authorize_rest(action, arg2):
     if action == _SQLITE_FUNCTION:
         blocked = (arg2 or "").lower() in _BLOCKED_FUNCTIONS
         return sqlite3.SQLITE_DENY if blocked else sqlite3.SQLITE_OK
@@ -252,9 +293,16 @@ def _size(value):
 
 
 class QueryEngine:
-    def __init__(self, path, timeout=TIMEOUT_S):
+    """`scoped=True` makes an engine whose every query is confined to the
+    project passed to run(). Scoped and unscoped queries never share a
+    connection, so a statement prepared under one rule set cannot be reused
+    under the other."""
+
+    def __init__(self, path, timeout=TIMEOUT_S, scoped=False):
         self.path = path
         self.timeout = timeout
+        self.scoped = scoped
+        self._project = None
         self._lock = threading.Lock()
         self._c = None
         self._deadline = 0.0
@@ -268,16 +316,37 @@ class QueryEngine:
             timeout=5,
         )
         c.execute("PRAGMA cache_size=-2048")  # 2 MiB
-        c.executescript(VIEWS)
+        if self.scoped:
+            c.create_function("mlop_project", 0, lambda: self._project, deterministic=True)
+            token = secrets.token_hex(16)
+            inner = {name: f"v_{token}_{name}" for name in _SCOPED_SHAPES}
+            for name, shape in _SCOPED_SHAPES.items():
+                c.execute(f"CREATE TEMP VIEW {inner[name]} AS " + shape.format(scope=_IN_SCOPE))
+                c.execute(f"CREATE TEMP VIEW {name} AS SELECT * FROM {inner[name]}")
+            trusted = set(inner.values())
+
+            def authorize(action, arg1, arg2, db, source):
+                if action == _SQLITE_READ:
+                    if arg1 in _HIDDEN_TABLES or arg1 in _CATALOGS:
+                        return sqlite3.SQLITE_DENY
+                    if db == "main" and source not in trusted:
+                        return sqlite3.SQLITE_DENY
+                    return sqlite3.SQLITE_OK
+                return _authorize_rest(action, arg2)
+        else:
+            c.executescript(VIEWS)
+            authorize = _authorize
         c.execute("PRAGMA query_only=ON")
         if hasattr(c, "setlimit"):  # Python 3.11+
             c.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
         c.set_progress_handler(lambda: time.monotonic() > self._deadline, 5000)
-        c.set_authorizer(_authorize)
+        c.set_authorizer(authorize)
         return c
 
-    def run(self, sql, params=None, limit=None):
+    def run(self, sql, params=None, limit=None, project=None):
         """Returns {columns, rows, row_count, truncated, elapsed_ms}."""
+        if self.scoped != (project is not None):
+            raise QueryError("this query engine was asked for the wrong scope")
         if not isinstance(sql, str) or not sql.strip():
             raise QueryError("sql is required")
         if len(sql) > MAX_SQL:
@@ -299,11 +368,14 @@ class QueryEngine:
                 self._c = self._connect()
             started = time.monotonic()
             self._deadline = started + self.timeout
+            self._project = project
             try:
                 cur = self._c.execute(sql, params)
                 if cur.description is None:
                     raise QueryError("only SELECT statements are allowed")
                 columns = [d[0] for d in cur.description]
+                if self.scoped and any(columns[: len(e)] == e for e in _EXPLAIN_COLUMNS):
+                    raise QueryError("EXPLAIN is not available here")
                 rows, size, truncated = [], 0, False
                 for row in cur:
                     if len(rows) >= limit or size > MAX_BYTES:

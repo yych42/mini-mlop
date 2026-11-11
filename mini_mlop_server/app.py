@@ -789,7 +789,8 @@ def chats(h):
 def chat_get(h, chat_id):
     chat = h.store.get_chat(_int_id(chat_id))
     h.send_json({
-        "id": chat["id"], "title": chat["title"], "usage": chat["usage"],
+        "id": chat["id"], "title": chat["title"], "project": chat["project"],
+        "usage": chat["usage"],
         "messages": agent.transcript(chat["messages"]),
     })
 
@@ -821,7 +822,16 @@ def chat_post(h):
     if body.get("chat_id") is not None:
         chat = h.store.get_chat(_int_id(str(body["chat_id"])))
     else:
-        chat = h.store.get_chat(h.store.create_chat(text.split("\n")[0][:80]))
+        # A new conversation is confined to one project for its whole life:
+        # the one asked for, else the one on screen, else all projects.
+        project = body.get("project")
+        if project is None and "project" not in body:
+            project = agent.page_project(h.store, body.get("context"))
+        if project is not None and (
+            not isinstance(project, str) or not h.store.project_exists(project)
+        ):
+            raise HTTPError(400, "no such project")
+        chat = h.store.get_chat(h.store.create_chat(text.split("\n")[0][:80], project))
     if not h.server.agent_slots.acquire(blocking=False):
         raise HTTPError(429, "the agent is busy with other questions; try again in a moment")
     try:
@@ -836,7 +846,7 @@ def chat_post(h):
                 except (BrokenPipeError, ConnectionError, socket.timeout):
                     connected = False  # finish the turn anyway so it is saved
 
-        emit({"type": "chat", "id": chat["id"], "title": chat["title"]})
+        emit({"type": "chat", "id": chat["id"], "title": chat["title"], "project": chat["project"]})
         try:
             agent.run_turn(h.store, chat, text, body.get("context"), emit)
         except (agent.AgentError, llm.LLMError) as e:

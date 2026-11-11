@@ -201,7 +201,7 @@ ul.examples button { width: 100%; text-align: left; margin: 0 0 6px; white-space
 #agent[hidden] { display: none; }
 @media (min-width: 1100px) { body.agent-open #view { margin-right: 440px; } }
 .agent-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-.agent-head select { min-width: 0; max-width: 190px; }
+.agent-head select { min-width: 0; flex: 0 1 150px; }
 .agent-log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .agent-form { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); align-items: flex-end; }
 .agent-form textarea { flex: 1; resize: none; min-height: 40px; max-height: 160px; }
