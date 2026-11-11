@@ -14,8 +14,6 @@ import time
 import uuid
 from typing import Any, Dict, Sequence, Union
 
-import numpy as np
-
 from .sets import get_console
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
@@ -84,6 +82,18 @@ def import_lib(m, a="None"):
                 f"{tag}: {m} not installed; module-related functionality will be disabled"
             )
             return None
+
+
+def require(m, what):
+    """Import an optional dependency, or explain how to get it."""
+    try:
+        return importlib.import_module(m)
+    except ImportError:
+        pkg = {"PIL.Image": "pillow"}.get(m, m)
+        raise ImportError(
+            f"{what} needs the '{pkg}' package: pip install {pkg} "
+            '(or pip install "mini-mlop[media]")'
+        ) from None
 
 
 def update_node(src, dst):
@@ -255,7 +265,11 @@ def get_val(v: Any):
             jax = import_lib("jax")
             v = jax.device_get(v)
 
-        if isinstance(v, np.ndarray):
+        # numpy is optional: if it was never imported, v cannot be an array
+        np = sys.modules.get("numpy")
+        if np is None:
+            pass
+        elif isinstance(v, np.ndarray):
             if v.size == 1:
                 v = v.flatten()[0]
         elif isinstance(v, np.generic):
@@ -264,7 +278,7 @@ def get_val(v: Any):
                 v.dtype.kind == "f" or v.dtype == "bfloat16"
             ):
                 v = float(v)
-        elif isinstance(v, bytes):
+        if isinstance(v, bytes):
             v = v.decode("utf-8")
 
         if isinstance(v, (float, int)) and not math.isnan(v):

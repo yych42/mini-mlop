@@ -1,38 +1,46 @@
-[project]
-version = "0.0.2rc5"
-name = "mlop"
-authors = [
-    {name = "jqssun", email = "jqssun+git@googlemail.com"},
-    {name = "lakeesiv", email = "lakeesivaraya@gmail.com"},
-]
-description = "mlop"
-readme = "README.md"
-license-files = [ "LICENSE" ]
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
+[project]
+name = "mini-mlop"
+version = "0.1.0"
+description = "Lightweight, self-hosted ML experiment tracking: a Python logger and a single-process server that fits on a Raspberry Pi."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.9"
+authors = [
+    {name = "mini-mlop contributors"},
+]
+keywords = ["mlops", "experiment-tracking", "self-hosted", "machine-learning"]
+
+# The server (`mlop_server`) needs nothing beyond the standard library.
+# These two are for the logging client (`mlop`).
 dependencies = [
-  "GitPython",
-  "httpx[http2]",
-  "keyring",
-  "keyrings.alt",
-  "pillow",
+  "httpx",
   "psutil",
-  "pynvml",
-  "rich",
-  "soundfile"
 ]
 
 [project.optional-dependencies]
-full = [
-  "pynvml",
-]
+media = ["numpy", "pillow", "soundfile"]  # mlop.Image / mlop.Audio from arrays
+gpu = ["nvidia-ml-py"]                    # NVIDIA utilisation metrics
+full = ["numpy", "pillow", "soundfile", "nvidia-ml-py"]
+dev = ["pytest", "numpy", "pillow"]
 
 [project.scripts]
 mlop = "mlop.__main__:main"
+mlop-server = "mlop_server.__main__:main"
 
 [tool.setuptools]
-packages = ["mlop", "mlop.compat"]
+packages = ["mlop", "mlop.compat", "mlop_server"]
+
+[tool.setuptools.package-data]
+mlop_server = ["web/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [project.urls]
-Homepage = "https://github.com/mlop-ai/mlop"
-Documentation = "https://mlop-ai.github.io/docs/"
-Repository = "https://github.com/mlop-ai/mlop.git"
+Homepage = "https://github.com/yych42/mini-mlop"
+Repository = "https://github.com/yych42/mini-mlop.git"

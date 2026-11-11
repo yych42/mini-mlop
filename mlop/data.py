@@ -1,9 +1,31 @@
 import logging
 
-import numpy as np
-
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = "Data"
+
+
+def _histogram(data, bins):
+    """Uniform-bin histogram; uses numpy when it is installed."""
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
+    if np is not None:
+        if hasattr(data, "detach"):  # torch tensor
+            data = data.detach().cpu().numpy()
+        d, b = np.histogram(data, bins=bins)
+        return d.tolist(), b.tolist()
+    if hasattr(data, "tolist"):
+        data = data.tolist()
+    vals = [float(v) for v in data]
+    lo, hi = (min(vals), max(vals)) if vals else (0.0, 1.0)
+    if lo == hi:
+        lo, hi = lo - 0.5, hi + 0.5
+    width = (hi - lo) / bins
+    freq = [0] * bins
+    for v in vals:
+        freq[min(int((v - lo) / width), bins - 1)] += 1
+    return freq, [lo + i * width for i in range(bins + 1)]
 
 
 class Data:  # TODO: add table class
@@ -87,12 +109,11 @@ class Histogram(Data):
             else:
                 self._shape = "uniform"
         elif (
-            isinstance(data, list)
-            or isinstance(data, np.ndarray)
+            isinstance(data, (list, tuple))
+            or data.__class__.__name__ == "ndarray"
             or (data.__class__.__name__ == "Tensor" and data.ndim == 1)
         ):
-            d, b = np.histogram(data, bins=bins)
-            d, b = d.tolist(), b.tolist()
+            d, b = _histogram(data, bins)
             self._shape = "uniform"
         else:
             logger.critical(
@@ -136,13 +157,13 @@ class Table(Data):
         data = self._dataframe if self._dataframe is not None else data
 
         if data.__class__.__name__ == "DataFrame" and hasattr(data, "to_dict"):
-            self._pd = self._dataframe.to_dict(orient="split")
+            self._pd = data.to_dict(orient="split")
             self._table = self._pd.get("data", [[None]])
             if not (self._col and len(self._col) == len(self._table[0])):
                 self._col = self._pd.get("columns", [])
             if not (self._row and len(self._row) == len(self._table)):
                 self._row = self._pd.get("index", [])
-        elif isinstance(data, np.ndarray):
+        elif data.__class__.__name__ == "ndarray" and hasattr(data, "tolist"):
             self._table = data.tolist()
         elif isinstance(data, list):
             self._table = data

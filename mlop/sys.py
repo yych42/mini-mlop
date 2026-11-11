@@ -2,17 +2,24 @@ import importlib.metadata
 import logging
 import os
 import platform
+import re
+import shutil
+import subprocess
 import time
 from typing import Any, Dict, List, Optional, Union
 
 import psutil
-from git import Repo
 
 from .sets import Settings
 from .util import run_cmd, to_human  # TODO: move to server side
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = "System"
+
+
+def _strip_credentials(url: str) -> str:
+    """https://user:token@host/repo -> https://host/repo"""
+    return re.sub(r"(?<=://)[^/@]+@", "", url)
 
 
 class System:
@@ -129,45 +136,43 @@ class System:
 
     def get_git(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {}
-        try:
-            repo = Repo(
-                f"{self.settings.dir}",
-                search_parent_directories=True,
-            )
+
+        def git(*args):
+            if not shutil.which("git"):
+                return None
             try:
-                c = {
-                    "name": repo.config_reader().get_value("user", "name"),
-                    "email": repo.config_reader().get_value("user", "email"),
-                }
-            except Exception as e:
-                c = {}
-            try:
-                c.update({"url": repo.remotes["origin"].url})
-            except Exception as e:
-                pass
-            d = {
-                "root": repo.git.rev_parse("--show-toplevel"),
-                "dirty": repo.is_dirty(),
-                "branch": repo.head.ref.name,
-                "commit": repo.head.commit.hexsha,
-                **c,
-            }
-            if d["root"]:
-                cmd = "git diff"
-                if repo.git.version_info >= (2, 11, 0):  # TODO: remove legacy compat
-                    cmd += " --submodule=diff"
-                d["diff"] = {
-                    "remote": run_cmd(cmd + " @{u}"),
-                }
-                if d["dirty"]:
-                    d["diff"]["head"] = run_cmd(cmd + " HEAD")
-        except Exception as e:
-            logger.debug(
-                "%s: git: repository not detected: (%s) %s",
-                tag,
-                e.__class__.__name__,
-                e,
-            )
+                r = subprocess.run(
+                    ["git", "-C", f"{self.settings.dir}", *args],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return None
+            return r.stdout.strip() if r.returncode == 0 else None
+
+        root = git("rev-parse", "--show-toplevel")
+        if not root:
+            logger.debug("%s: git: repository not detected", tag)
+            return d
+        status = git("status", "--porcelain", "--untracked-files=no")
+        d = {
+            "root": root,
+            "dirty": bool(status),
+            "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
+            "commit": git("rev-parse", "HEAD"),
+        }
+        for key, name in (("name", "user.name"), ("email", "user.email")):
+            value = git("config", "--get", name)
+            if value:
+                d[key] = value
+        url = git("config", "--get", "remote.origin.url")
+        if url:
+            d["url"] = _strip_credentials(url)
+        d["diff"] = {"remote": git("diff", "--submodule=diff", "@{u}")}
+        if d["dirty"]:
+            d["diff"]["head"] = git("diff", "--submodule=diff", "HEAD")
         return d
 
     def get_info(self) -> Dict[str, Any]:
@@ -235,10 +240,10 @@ class System:
             },
         }
         if self.gpu:
-            if self.gpu.get("nvidia"):
+            if self.gpu.get("nvidia", {}).get("handles"):
                 import pynvml
 
-                for h in self.gpu["nvidia"]["handles"]:
+                for h in self.gpu["nvidia"].get("handles", []):
                     dev = str(pynvml.nvmlDeviceGetName(h)).lower().replace(" ", "_")
                     d[f"{p}/gpu.nvda.{dev}.pct"] = pynvml.nvmlDeviceGetUtilizationRates(
                         h
@@ -292,7 +297,7 @@ class System:
             }
         if self.gpu:
             d["gpu"] = {}
-            if self.gpu.get("nvidia"):
+            if self.gpu.get("nvidia", {}).get("handles"):
                 import pynvml
 
                 d["gpu"]["nvidia"] = {}
@@ -320,7 +325,7 @@ class System:
                             )
                         ],
                     }
-                    for h in self.gpu["nvidia"]["handles"]
+                    for h in self.gpu["nvidia"].get("handles", [])
                 ]
         if self.settings.mode == "debug":
             d["memory"]["swap"] = {

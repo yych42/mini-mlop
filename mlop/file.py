@@ -8,11 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Union
 
-import numpy as np
-import soundfile as sf
-from PIL import Image as PILImage
-
-from .util import get_class
+from .util import get_class, require
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = "File"
@@ -80,6 +76,7 @@ class Artifact(File):
         self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
 
         self._metadata = metadata if metadata is not None else {}
+        self._path = None
         if isinstance(data, str) and os.path.exists(data):
             self._path = os.path.abspath(data)
 
@@ -102,6 +99,7 @@ class Text(File):
         self._name = caption + f".{uuid.uuid4()}" if caption else f"{uuid.uuid4()}"
         self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
         self._ext = ".txt"
+        self._path = None
 
         if isinstance(data, str):
             if os.path.exists(data):
@@ -127,7 +125,7 @@ class Image(File):
 
     def __init__(
         self,
-        data: Union[str, "PILImage.Image", np.ndarray],
+        data: Union[str, "PILImage.Image", "np.ndarray"],
         caption: Union[str, None] = None,
     ) -> None:
         self._name = caption + f".{uuid.uuid4()}" if caption else f"{uuid.uuid4()}"
@@ -179,7 +177,7 @@ class Audio(File):
 
     def __init__(
         self,
-        data: Union[str, np.ndarray],
+        data: Union[str, "np.ndarray"],
         rate: Union[int, None] = 48000,
         caption: Union[str, None] = None,
         **kwargs,
@@ -197,7 +195,7 @@ class Audio(File):
             self._path = os.path.abspath(data)
         else:
             self._path = None
-            if isinstance(data, np.ndarray):
+            if data.__class__.__name__ == "ndarray":
                 logger.debug(f"{self.tag}: used numpy array")
                 self._audio = data
                 self._rate = rate
@@ -208,6 +206,7 @@ class Audio(File):
         if not self._path:
             if dir:
                 self._tmp = f"{dir}/files/{self._name}-{self._id}{self._ext}"
+                sf = require("soundfile", "logging audio arrays")
                 sf.write(file=self._tmp, data=self._audio, samplerate=self._rate)
                 self._path = os.path.abspath(self._tmp)
 
@@ -219,7 +218,7 @@ class Video(File):
 
     def __init__(
         self,
-        data: Union[str, np.ndarray],
+        data: Union[str, "np.ndarray"],
         rate: Union[int, None] = 30,
         caption: Union[str, None] = None,
         format: Union[str, None] = None,
@@ -237,7 +236,7 @@ class Video(File):
             self._path = os.path.abspath(data)
         else:
             self._path = None
-            if hasattr(data, "numpy") or isinstance(data, np.ndarray):
+            if hasattr(data, "numpy") or data.__class__.__name__ == "ndarray":
                 if hasattr(data, "numpy"):
                     logger.debug(f"{self.tag}: used tensor")
                     self._data = data.numpy()
@@ -336,6 +335,7 @@ def make_compat_image_torch(val: any) -> any:
     if hasattr(val, "dtype") and str(val.dtype).startswith("torch.uint8"):
         val = val.to(float)
     data = make_grid(val, normalize=True)
+    PILImage = require("PIL.Image", "logging images")
     image = PILImage.fromarray(
         data.mul(255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
     )
@@ -343,7 +343,7 @@ def make_compat_image_torch(val: any) -> any:
 
 
 def make_compat_image_numpy(val: any) -> any:
-    import numpy as np
+    np = require("numpy", "logging image arrays")
 
     if hasattr(val, "numpy"):
         val = val.numpy()
@@ -356,5 +356,6 @@ def make_compat_image_numpy(val: any) -> any:
         val = (val * 255).astype(np.int32)
     val = val.clip(0, 255).astype(np.uint8)
 
+    PILImage = require("PIL.Image", "logging images")
     image = PILImage.fromarray(val, mode="RGBA" if val.shape[-1] == 4 else "RGB")
     return image

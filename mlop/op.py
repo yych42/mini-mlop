@@ -1,3 +1,4 @@
+import _thread
 import atexit
 import logging
 import multiprocessing
@@ -63,6 +64,19 @@ class OpMonitor:
         elif self.op.settings._op_status == -1:
             self.op.settings._op_status = 0
 
+    def _cancel(self):
+        """The run was stopped from the server. Interrupt the main thread so
+        the script unwinds like a CTRL+C and buffered data still gets sent;
+        if it has not exited by the next few checks, exit hard."""
+        self._cancelled = getattr(self, "_cancelled", 0) + 1
+        if self._cancelled == 1:
+            logger.critical(f"{tag}: run was stopped from the server; interrupting")
+            self.op.settings._op_status = signal.SIGINT.value
+            _thread.interrupt_main()
+        elif self._cancelled > 8:
+            logger.critical(f"{tag}: run did not stop; exiting")
+            os._exit(signal.SIGINT.value)
+
     def _worker_monitor(self, stop):
         while not stop():
             try:
@@ -82,8 +96,7 @@ class OpMonitor:
                     else None
                 )
                 if hasattr(r, "json") and r.json()["status"] == "CANCELLED":
-                    logger.critical(f"{tag}: server finished run")
-                    os._exit(signal.SIGINT.value)  # TODO: do a more graceful exit
+                    self._cancel()
             except Exception as e:
                 logger.critical("%s: failed: %s", tag, e)
             time.sleep(self.op.settings.x_sys_sampling_interval)
@@ -112,6 +125,11 @@ class Op:
                 ),
                 client=tmp_iface.client_api,
             )
+            if r is None:
+                raise RuntimeError(
+                    f"could not create a run on {self.settings.url_base()}; "
+                    "see the log lines above for the server's response"
+                )
             self.settings.url_view = r.json()["url"]
             self.settings._op_id = r.json()["runId"]
             logger.info(f"{tag}: started run {str(self.settings._op_id)}")
@@ -171,6 +189,10 @@ class Op:
 
     def finish(self, code: Union[int, None] = None) -> None:
         """Finish logging"""
+        if getattr(self, "_finished", False):
+            return
+        self._finished = True
+        atexit.unregister(self.finish)
         try:
             self._monitor.stop(code)
             self._drained.wait()
@@ -279,8 +301,10 @@ class Op:
                 self._drained.set()
                 continue
             except Exception as e:
-                time.sleep(self.settings.x_internal_check_process)  # debounce
                 logger.critical("%s: failed: %s", tag, e)
+                if self._queue.empty():  # never leave finish() waiting
+                    self._drained.set()
+                time.sleep(self.settings.x_internal_check_process)  # debounce
 
     def _log(self, data, step: Union[int, None], t: Union[float, None] = None) -> None:
         if not isinstance(data, Mapping):

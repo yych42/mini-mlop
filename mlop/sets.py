@@ -7,6 +7,9 @@ from typing import Any, Dict, List, Union
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = "Settings"
 
+DEFAULT_PORT = 2718
+DEFAULT_URL = f"http://localhost:{DEFAULT_PORT}"
+
 
 class Settings:
     tag: str = f"{__name__.split('.')[0]}"
@@ -53,30 +56,27 @@ class Settings:
     x_grad_label: str = "grad"
     x_param_label: str = "param"
 
+    # Where the mlop server lives. One server, one address:
+    #   url   full base URL, e.g. "http://pi.local:2718" (env MLOP_URL)
+    #   host  shorthand for "http://<host>:2718"
+    url: str = None
     host: str = None
     url_view: str = None
     url_webhook: str = None
 
-    _url_defaults = {
-        "url_app": "https://app.mlop.ai",
-        "url_api": "https://api-prod.mlop.ai",
-        "url_ingest": "https://ingest-prod.mlop.ai",
-        "url_py": "https://py-prod.mlop.ai",
-    }
-    _url_ports = {"url_app": 3000, "url_api": 3001, "url_ingest": 3003, "url_py": 3004}
     _url_routes = {
-        "url_token": ("url_app", "/api-keys"),
-        "url_login": ("url_api", "/api/slug"),
-        "url_start": ("url_api", "/api/runs/create"),
-        "url_stop": ("url_api", "/api/runs/status/update"),
-        "url_meta": ("url_api", "/api/runs/logName/add"),
-        "url_graph": ("url_api", "/api/runs/modelGraph/create"),
-        "url_num": ("url_ingest", "/ingest/metrics"),
-        "url_data": ("url_ingest", "/ingest/data"),
-        "url_file": ("url_ingest", "/files"),
-        "url_message": ("url_ingest", "/ingest/logs"),
-        "url_alert": ("url_py", "/api/runs/alert"),
-        "url_trigger": ("url_py", "/api/runs/trigger"),
+        "url_token": "/#/settings",
+        "url_login": "/api/slug",
+        "url_start": "/api/runs/create",
+        "url_stop": "/api/runs/status/update",
+        "url_meta": "/api/runs/logName/add",
+        "url_graph": "/api/runs/modelGraph/create",
+        "url_num": "/ingest/metrics",
+        "url_data": "/ingest/data",
+        "url_file": "/files",
+        "url_message": "/ingest/logs",
+        "url_alert": "/api/runs/alert",
+        "url_trigger": "/api/runs/trigger",
     }
 
     def __init__(self) -> None:  # mutable defaults
@@ -86,16 +86,26 @@ class Settings:
         self.project = self.tag
         self.meta = []
         self.message = queue.Queue()
+        self.url = os.environ.get("MLOP_URL") or None
+        self._auth = os.environ.get("MLOP_API_KEY") or None
 
     def __getattr__(self, name):
         if name in self._url_routes:
-            base_name, route = self._url_routes[name]
-            return getattr(self, base_name) + route
-        if name in self._url_defaults:
-            if self.host is not None:
-                return f"http://{self.host}:{self._url_ports[name]}"
-            return self._url_defaults[name]
+            return self.url_base() + self._url_routes[name]
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    def url_base(self) -> str:
+        if self.url:
+            url = self.url.rstrip("/")
+            return url if "://" in url else f"http://{url}"
+        if self.host:
+            host = self.host.rstrip("/")
+            if "://" not in host:
+                host = f"http://{host}"
+            if host.count(":") < 2:  # no explicit port
+                host = f"{host}:{DEFAULT_PORT}"
+            return host
+        return DEFAULT_URL
 
     def update(self, settings) -> None:
         if isinstance(settings, Settings):

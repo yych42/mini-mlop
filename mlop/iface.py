@@ -5,8 +5,6 @@ import time
 from typing import Any, Dict, List, Union
 
 import httpx
-from rich.console import Console
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from .api import (
     make_compat_data_v1,
@@ -39,6 +37,8 @@ class ServerInterface:
             "X-Run-Name": f"{self.settings._op_name}",
             "X-Project-Name": f"{self.settings.project}",
         }
+        if not self.settings._auth:  # server running without authentication
+            del self.headers["Authorization"]
         self.headers_num = self.headers.copy()
         self.headers_num.update({"Content-Type": "application/x-ndjson"})
 
@@ -78,23 +78,16 @@ class ServerInterface:
         self._thread_num = None
         self._queue_data = queue.Queue()
         self._thread_data = None
+        self._queue_file = queue.Queue()
+        self._drained_file = threading.Event()
+        self._drained_file.set()
         self._thread_file = None
-        self._thread_storage = None
         self._thread_meta = None
 
         self._queue_message = self.settings.message
         self._thread_message = None
 
-        self._progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            transient=True,
-            console=Console(file=_stderr),
-            # redirect_stdout=False,
-        )
-        self._progress_task = None
+        self._progress_shown = False
         self._thread_progress = None
         self._lock_progress = threading.Lock()
         self._total = 0
@@ -129,6 +122,11 @@ class ServerInterface:
                 daemon=True,
             )
             self._thread_data.start()
+        if self._thread_file is None:
+            self._thread_file = threading.Thread(
+                target=self._worker_file, args=(self._stop_event.is_set,), daemon=True
+            )
+            self._thread_file.start()
         if self._thread_message is None:
             self._thread_message = threading.Thread(
                 target=self._worker_publish,
@@ -169,16 +167,15 @@ class ServerInterface:
                     make_compat_data_v1(data, timestamp, step), block=False
                 )
             if file:
-                self._thread_file = threading.Thread(
-                    target=self._worker_file,
-                    args=(file, make_compat_file_v1(file, timestamp, step)),
-                    daemon=True,
-                )  # TODO: batching
-                self._thread_file.start()
+                self._drained_file.clear()
+                self._queue_file.put(
+                    (file, make_compat_file_v1(file, timestamp, step)), block=False
+                )
 
     def save(self) -> None:
         self._drained_num.wait()
         self._drained_data.wait()
+        self._drained_file.wait()
 
     def stop(self) -> None:
         if self._thread_progress is None:
@@ -194,7 +191,6 @@ class ServerInterface:
             self._thread_num,
             self._thread_data,
             self._thread_file,
-            self._thread_storage,
             self._thread_message,
             self._thread_meta,
             self._thread_progress,
@@ -203,10 +199,7 @@ class ServerInterface:
                 t.join(timeout=None)
                 t = None
 
-        if self._progress_task is not None:
-            self._progress.remove_task(self._progress_task)
-            self._progress_task = None
-        self._progress.stop()
+        self._progress_clear()
         self._update_status(self.settings)
 
         logger.info(
@@ -236,35 +229,39 @@ class ServerInterface:
         self._thread_meta.start()
 
     def _worker_progress(self):
+        try:
+            tty = _stderr.isatty()
+        except Exception:
+            tty = False
         while not (
             self._stop_event.is_set()
             and self._queue_num.empty()
             and self._queue_data.empty()
+            and self._queue_file.empty()
         ):
             with self._lock_progress:
-                if self._total > 0:
-                    i = self._total - (
-                        self._queue_num.qsize() + self._queue_data.qsize()
+                pending = (
+                    self._queue_num.qsize()
+                    + self._queue_data.qsize()
+                    + self._queue_file.qsize()
+                )
+                if tty and self._total > 0 and pending > 0:
+                    done = max(self._total - pending, 0)
+                    _stderr.write(
+                        f"\r{self.settings.tag}: uploading {done}/{self._total} "
+                        f"({100 * done // self._total}%)\x1b[K"
                     )
-                    p = 100 * i / self._total
-
-                    if self._progress_task is None and p < 100:  # init
-                        self._progress_task = self._progress.add_task(
-                            "Processing:", total=100
-                        )
-                        self._progress.start()
-
-                    if self._progress_task is not None:  # update if exists
-                        self._progress.update(
-                            self._progress_task,
-                            completed=min(p, 100),
-                            description=f"Uploading ({max(i, 0)}/{self._total}):",
-                        )
-                        if p >= 100:
-                            self._progress.remove_task(self._progress_task)
-                            self._progress_task = None  # signal no active task
-
+                    _stderr.flush()
+                    self._progress_shown = True
+                elif pending == 0:
+                    self._progress_clear()
             time.sleep(self.settings.x_internal_check_process / 2)
+
+    def _progress_clear(self):
+        if self._progress_shown:
+            self._progress_shown = False
+            _stderr.write("\r\x1b[K")
+            _stderr.flush()
 
     def _worker_publish(self, e, h, q, stop, name=None, drained=None):
         while not (q.empty() and stop()):  # terminates only when both conditions met
@@ -283,49 +280,54 @@ class ServerInterface:
                 if q.empty() and drained is not None:
                     drained.set()
 
-    def _worker_storage(self, f, url, data):
-        _ = self._put_v1(
-            url,
-            {
-                "Content-Type": f._type,  # "application/octet-stream"
-            },
-            data,
-            client=self.client_storage,
-        )
+    def _worker_file(self, stop):
+        # One worker uploads files in order, so memory and connections stay
+        # bounded and nothing is still in flight when the run finishes.
+        while not (self._queue_file.empty() and stop()):
+            try:
+                file, payload = self._queue_file.get(
+                    timeout=self.settings.x_internal_check_process
+                )
+            except queue.Empty:
+                self._drained_file.set()
+                continue
+            try:
+                self._upload(file, payload)
+            except Exception as e:
+                logger.critical(
+                    "%s: failed to send files to %s: [%s] %s",
+                    tag,
+                    self.settings.url_file,
+                    type(e).__name__,
+                    e,
+                )
+            if self._queue_file.empty():
+                self._drained_file.set()
 
-    def _worker_file(self, file, q):
+    def _upload(self, file, payload):
         r = self._post_v1(
-            self.settings.url_file,
-            self.headers,
-            q,
-            client=self.client,
+            self.settings.url_file, self.headers, payload, client=self.client
         )
-        try:
-            d = r.json()
-            for k, fel in file.items():
-                for f in fel:
-                    url = make_compat_storage_v1(f, d[k])
-                    with open(
-                        f._path, "rb"
-                    ) as file:  # TODO: data = open(f._path, "rb")
-                        data = file.read()
-                    if not url:
-                        logger.critical(f"{tag}: file api did not provide storage url")
-                    else:
-                        self._thread_storage = threading.Thread(
-                            target=self._worker_storage,
-                            args=(f, url, data),
-                            daemon=True,
-                        )
-                        self._thread_storage.start()
-        except Exception as e:
-            logger.critical(
-                "%s: failed to send files to %s: [%s] %s",
-                tag,
-                self.settings.url_file,
-                type(e).__name__,
-                e,
-            )
+        if r is None:
+            return
+        d = r.json()
+        headers = {k: v for k, v in self.headers.items() if k != "Content-Type"}
+        for k, fel in file.items():
+            for f in fel:
+                url = make_compat_storage_v1(f, d.get(k, []))
+                if not url:
+                    logger.critical(f"{tag}: file api did not provide storage url")
+                    continue
+                if url.startswith("/"):  # relative to the server we talk to
+                    url = self.settings.url_base() + url
+                with open(f._path, "rb") as fp:
+                    data = fp.read()
+                self._put_v1(
+                    url,
+                    {**headers, "Content-Type": f._type},
+                    data,
+                    client=self.client_storage,
+                )
 
     def _worker_meta(self, num=None, file=None):
         if num:
@@ -375,6 +377,12 @@ class ServerInterface:
             r = method(url, content=content, headers=headers)
             if r.status_code in [200, 201]:
                 return r
+            if 400 <= r.status_code < 500 and r.status_code not in (408, 429):
+                # the server understood and refused; retrying cannot help
+                logger.error(
+                    f"{tag}: {name}: rejected by {url}: {r.status_code} {r.text[:200]}"
+                )
+                return None
             logger.warning(
                 f"{tag}: {name}: retry {retry + 1}/{self.settings.x_file_stream_retry_max}: response code {r.status_code if r else 'N/A'} for {len(q) if q else 'request'} from {url}: {r.text if r else 'N/A'}"
             )
