@@ -1,8 +1,8 @@
 # Fly.io deployment of the mini-mlop server, set up as a cheap test server:
 # the smallest machine, suspended when idle, woken by the next request.
-# Steps are in docs/server.md under "Fly.io".
+# Deployed by .github/workflows/deploy.yml; setup is in docs/server.md under "Fly.io".
 
-app = "mini-mlop"          # must be unique on Fly; change it or let `fly launch` pick one
+app = "mini-mlop"          # must be unique on Fly; the deploy workflow uses the FLY_APP variable instead if set
 primary_region = "iad"     # `fly platform regions` lists the others
 
 [build]

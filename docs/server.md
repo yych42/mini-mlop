@@ -140,32 +140,34 @@ available where this was written — so treat it as a starting point.)
 Fly machine (shared CPU, 256 MB) with a 1 GB volume for the data. When nothing has talked to the
 server for a few minutes, Fly suspends the machine, and the next request (the web UI, `mini-mlop`
 or a training job's logger) wakes it in well under a second. While a run is logging, its
-heartbeats keep the machine awake. From the repository root, with
-[`flyctl`](https://fly.io/docs/flyctl/install/) installed and `fly auth login` done:
+heartbeats keep the machine awake.
 
-```bash
-fly launch --copy-config --no-deploy
-```
+Deploy with GitHub Actions: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)
+deploys every push to `main` once the tests pass, and can be started by hand from the Actions tab.
+One-time setup:
 
-```bash
-fly volumes create mini_mlop_data --size 1 --region iad
-```
+1. Create a Fly org token: `fly tokens create org`, or in the Fly dashboard under **Tokens**. An
+   org token (not a deploy token) is needed so the first run can create the app and volume.
+2. In the GitHub repository, **Settings → Secrets and variables → Actions**: add the secret
+   `FLY_API_TOKEN`, and the variable `FLY_APP` with an app name nobody on Fly has taken (otherwise
+   the `app` in `fly.toml` is used). If your Fly organisation is not your personal one, add the
+   variable `FLY_ORG` with its slug.
+3. Run the workflow. The first run creates the app and the `mini_mlop_data` volume in
+   `primary_region`, then deploys. Later runs only deploy.
 
-```bash
-fly deploy
-```
+The server is then at `https://<app>.fly.dev`. On the first start it prints an admin key to the
+Fly logs (`fly logs --app <app>`, or **Logs** in the dashboard): sign in with it, then **Rotate**
+it under Settings → API keys, since log output is kept by Fly.
 
-```bash
-fly logs
-```
+Deploying from a laptop works too, from the repository root: `fly deploy --app <app> --ha=false`.
+Avoid Fly's website "launch from GitHub" flow: it generates its own configuration instead of
+reading `fly.toml`.
 
-`fly launch` asks for an app name (write the one you pick into `fly.toml`); create the volume in
-the same region as `primary_region`. `fly logs` shows the API key printed on first start, and the
-server is at `https://<app>.fly.dev`. Optionally set `fly secrets set MINI_MLOP_SECRET_KEY=...`
-before the first deploy (see [Secrets](#secrets)). Fly terminates HTTPS, and run links pick up
-the public address from its forwarded headers. For a full shutdown instead of suspend, set
-`auto_stop_machines = "stop"`: it costs nothing but disk while stopped, and starts in a second or
-two. The volume is billed whether the machine runs or not.
+Fly terminates HTTPS, and run links pick up the public address from its forwarded headers.
+Optionally `fly secrets set MINI_MLOP_SECRET_KEY=... --app <app>` before the first deploy (see
+[Secrets](#secrets)). For a full shutdown instead of suspend, set `auto_stop_machines = "stop"`:
+it costs nothing but disk while stopped, and starts in a second or two. The volume is billed
+whether the machine runs or not.
 
 Lost every admin key? Make a new one on the machine. Run it as the `mini-mlop` user, so the
 database files stay writable by the server:
