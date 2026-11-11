@@ -126,6 +126,37 @@ The second command shows the API key printed on first start. The image is `pytho
 the `mini_mlop_server` folder. (The Dockerfile has not been exercised in CI yet — the daemon was not
 available where this was written — so treat it as a starting point.)
 
+**Fly.io** (cheap, sleeps when idle): [`fly.toml`](../fly.toml) runs the server on the smallest
+Fly machine (shared CPU, 256 MB) with a 1 GB volume for the data. When nothing has talked to the
+server for a few minutes, Fly suspends the machine, and the next request (the web UI, `mini-mlop`
+or a training job's logger) wakes it in well under a second. While a run is logging, its
+heartbeats keep the machine awake. From the repository root, with
+[`flyctl`](https://fly.io/docs/flyctl/install/) installed and `fly auth login` done:
+
+```bash
+fly launch --copy-config --no-deploy
+```
+
+```bash
+fly volumes create mini_mlop_data --size 1 --region iad
+```
+
+```bash
+fly deploy
+```
+
+```bash
+fly logs
+```
+
+`fly launch` asks for an app name (write the one you pick into `fly.toml`); create the volume in
+the same region as `primary_region`. `fly logs` shows the API key printed on first start, and the
+server is at `https://<app>.fly.dev`. Optionally set `fly secrets set MINI_MLOP_SECRET_KEY=...`
+before the first deploy (see [Secrets](#secrets)). Fly terminates HTTPS, and run links pick up
+the public address from its forwarded headers. For a full shutdown instead of suspend, set
+`auto_stop_machines = "stop"`: it costs nothing but disk while stopped, and starts in a second or
+two. The volume is billed whether the machine runs or not.
+
 ## HTTPS and exposure
 
 The server speaks plain HTTP. On a home or lab network that is usually fine. Before exposing it
