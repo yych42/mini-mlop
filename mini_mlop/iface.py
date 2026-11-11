@@ -382,6 +382,10 @@ class ServerInterface:
                 logger.error(
                     f"{tag}: {name}: rejected by {url}: {r.status_code} {r.text[:200]}"
                 )
+                try:
+                    self.last_rejection = str(r.json().get("error") or r.text[:200])
+                except Exception:
+                    self.last_rejection = r.text[:200]
                 return None
             logger.warning(
                 f"{tag}: {name}: retry {retry + 1}/{self.settings.x_file_stream_retry_max}: response code {r.status_code if r else 'N/A'} for {len(q) if q else 'request'} from {url}: {r.text if r else 'N/A'}"

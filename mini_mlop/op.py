@@ -126,9 +126,10 @@ class Op:
                 client=tmp_iface.client_api,
             )
             if r is None:
+                why = getattr(tmp_iface, "last_rejection", None)
                 raise RuntimeError(
-                    f"could not create a run on {self.settings.url_base()}; "
-                    "see the log lines above for the server's response"
+                    f"could not create a run on {self.settings.url_base()}"
+                    + (f": {why}" if why else "; see the log lines above for the server's response")
                 )
             self.settings.url_view = r.json()["url"]
             self.settings._op_id = r.json()["runId"]

@@ -18,6 +18,7 @@ import time
 
 from . import llm, sandbox
 from .query import QueryError, describe
+from .secretbox import SecretError, is_encrypted
 
 MAX_STEPS = 12  # model calls per user message
 MAX_TOKENS = 4096  # per model call
@@ -38,12 +39,49 @@ class AgentError(Exception):
 # -- configuration ------------------------------------------------------------
 
 
-def load_config(store):
+def _stored(store):
     cfg = store.get_setting("agent") or {}
     cfg.setdefault("llm", {})
     cfg.setdefault("sandbox", {"provider": "none"})
     cfg.setdefault("daily_token_limit", DEFAULT_DAILY_TOKENS)
     return cfg
+
+
+def load_config(store):
+    """The config with secrets decrypted. A secret that cannot be decrypted
+    (the secret key changed) comes back empty, with its name in "unreadable"."""
+    cfg = _stored(store)
+    cfg["unreadable"] = []
+    for section, field in SECRET_FIELDS:
+        try:
+            cfg[section][field] = store.box.decrypt(cfg[section].get(field) or "")
+        except SecretError:
+            cfg[section][field] = ""
+            cfg["unreadable"].append(f"{section}.{field}")
+    return cfg
+
+
+def encrypt_stored_secrets(store):
+    """Encrypt secrets saved before encryption existed. Runs at startup."""
+    cfg = store.get_setting("agent")
+    if not cfg:
+        return
+    changed = False
+    for section, field in SECRET_FIELDS:
+        value = (cfg.get(section) or {}).get(field)
+        if value and not is_encrypted(value):
+            cfg[section][field] = store.box.encrypt(value)
+            changed = True
+    if changed:
+        store.set_setting("agent", cfg)
+
+
+def _check_readable(cfg, what):
+    if what in cfg.get("unreadable", ()):
+        raise AgentError(
+            "a saved key can no longer be decrypted, most likely because "
+            "MINI_MLOP_SECRET_KEY changed. Enter the key again in Settings."
+        )
 
 
 def _mask(secret):
@@ -56,12 +94,15 @@ def public_config(store):
     """The config as the UI may see it: secrets replaced by a hint."""
     cfg = load_config(store)
     out = json.loads(json.dumps(cfg))
+    unreadable = out.pop("unreadable")
     for section, field in SECRET_FIELDS:
         secret = out.get(section, {}).pop(field, None)
         out[section][f"{field}_hint"] = _mask(secret)
     return {
         "config": out,
         "ready": bool(cfg["llm"].get("provider") and cfg["llm"].get("model")),
+        "unreadable": unreadable,
+        "encryption": store.box.source,  # "env" or "keyfile"
         "providers": [{"id": k, **v} for k, v in llm.PROVIDERS.items()],
         "sandboxes": sandbox.catalog(),
         "tokens_today": store.get_setting(f"usage:{_today()}", 0),
@@ -95,6 +136,14 @@ def update_config(store, body):
             cfg["daily_token_limit"] = max(0, int(body["daily_token_limit"]))
         except (TypeError, ValueError):
             raise AgentError("daily_token_limit must be a number")
+    unreadable = cfg.pop("unreadable")
+    for section, field in SECRET_FIELDS:
+        name = f"{section}.{field}"
+        if name in unreadable and not (body.get(section) or {}).get(field):
+            # Not re-entered: keep the ciphertext in case the old secret returns.
+            cfg[section][field] = (_stored(store).get(section) or {}).get(field) or ""
+        else:
+            cfg[section][field] = store.box.encrypt(cfg[section].get(field) or "")
     store.set_setting("agent", cfg)
     return cfg
 
@@ -345,6 +394,7 @@ def run_turn(store, chat, text, context, emit, complete=llm.complete):
     """Answer one user message, appending to chat["messages"] and emitting
     events for the UI as it goes. The caller saves the chat."""
     cfg = load_config(store)
+    _check_readable(cfg, "llm.api_key")
     box = sandbox.make(cfg.get("sandbox"))
     tools = [QUERY_TOOL] + ([PYTHON_TOOL] if box else [])
     project = chat.get("project")

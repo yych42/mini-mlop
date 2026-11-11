@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import __version__, agent, llm, mcp
 from .query import QueryError, describe as describe_query
-from .store import Invalid, NotFound, Store
+from .store import ACCESS, Invalid, NotFound, Store
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 COOKIE = "mini_mlop_session"
@@ -57,6 +57,7 @@ class Config:
         max_upload_mb=2048,
         public_url=None,
         verbose=False,
+        secret=None,
     ):
         self.data_dir = data_dir
         self.host = host
@@ -66,6 +67,7 @@ class Config:
         self.max_upload = max_upload_mb * 2**20
         self.public_url = public_url.rstrip("/") if public_url else None
         self.verbose = verbose
+        self.secret = secret  # unlocks stored provider keys; None = key file
 
 
 class Static:
@@ -95,11 +97,13 @@ class Static:
 ROUTES = []
 
 
-def route(method, pattern, auth=True):
+def route(method, pattern, auth=True, need="read"):
+    """`need` is the least access a key must have: read, write or admin.
+    Handlers additionally confine project-bound keys to their project."""
     regex = re.compile("^" + re.sub(r"<(\w+)>", r"(?P<\1>[^/]+)", pattern) + "$")
 
     def register(fn):
-        ROUTES.append((method, regex, fn, auth))
+        ROUTES.append((method, regex, fn, auth, need))
         return fn
 
     return register
@@ -136,13 +140,14 @@ class Handler(BaseHTTPRequestHandler):
         self.head = head
         self.body_read = self.body_done = False
         self.store = self.server.store
+        self.key, self.access, self.scope = None, "admin", None
         url = urlsplit(self.path)
         self.query = parse_qs(url.query)
         path = unquote(url.path)
         try:
             if method == "GET" and path in self.server.static.files:
                 return self.send_static(path)
-            for m, regex, fn, needs_auth in ROUTES:
+            for m, regex, fn, needs_auth, need in ROUTES:
                 match = regex.match(path)
                 if not match:
                     continue
@@ -150,6 +155,7 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 if needs_auth:
                     self.authenticate()
+                    self.require(need)
                 return fn(self, **match.groupdict())
             raise HTTPError(404, "not found")
         except HTTPError as e:
@@ -173,6 +179,7 @@ class Handler(BaseHTTPRequestHandler):
         if header.startswith("Bearer "):
             self.key = self.store.check_key(header[7:].strip())
             if self.key:
+                self.access, self.scope = self.key["access"], self.key["project"]
                 return
             raise HTTPError(401, "invalid API key")
         jar = cookies.SimpleCookie()
@@ -184,11 +191,33 @@ class Handler(BaseHTTPRequestHandler):
             self.key = self.store.check_key(jar[COOKIE].value)
         if not self.key:
             raise HTTPError(401, "not logged in")
+        self.access, self.scope = self.key["access"], self.key["project"]
         # Cookie-authenticated writes must come from our own pages.
         if self.command not in ("GET", "HEAD"):
             origin = self.headers.get("Origin")
             if origin and urlsplit(origin).netloc != self.headers.get("Host"):
                 raise HTTPError(403, "cross-origin request refused")
+
+    def require(self, need):
+        if ACCESS[self.access] < ACCESS[need]:
+            raise HTTPError(
+                403, f"this API key has {self.access} access; this needs {need} access"
+            )
+
+    def check_run(self, run_id):
+        """Project-bound keys see only their project's runs; anything else
+        looks like it does not exist."""
+        if self.scope is not None and self.store.run_project(run_id) != self.scope:
+            raise HTTPError(404, f"run {run_id} not found")
+        return run_id
+
+    def check_project(self, name):
+        if self.scope is not None and name != self.scope:
+            raise HTTPError(404, "project not found")
+        return name
+
+    def run(self, raw):
+        return self.check_run(_int_path(raw))
 
     def base_url(self):
         cfg = self.server.config
@@ -298,9 +327,10 @@ class Handler(BaseHTTPRequestHandler):
         if value is None:
             value = self.headers.get("X-Run-Id")
         try:
-            return int(value)
+            value = int(value)
         except (TypeError, ValueError):
             raise HTTPError(400, "missing or invalid run id")
+        return self.check_run(value)
 
     def arg(self, name, default=None):
         values = self.query.get(name)
@@ -475,6 +505,8 @@ def me(h):
         {
             "auth": h.server.config.auth,
             "key": h.key["name"] if h.key else None,
+            "access": h.access,
+            "project": h.scope,
             "version": __version__,
             "url": h.base_url(),
         }
@@ -490,9 +522,15 @@ def slug(h):
     h.send_json({"organization": {"slug": "mini-mlop"}, "version": __version__})
 
 
-@route("POST", "/api/runs/create")
+@route("POST", "/api/runs/create", need="write")
 def runs_create(h):
     b = h.read_json()
+    if h.scope is not None and b.get("projectName") != h.scope:
+        raise HTTPError(
+            403,
+            f"this API key can only log to the project {h.scope!r}; "
+            f"pass project={h.scope!r} or use a different key",
+        )
     run_id = h.store.create_run(
         b.get("projectName"),
         b.get("runName"),
@@ -510,21 +548,21 @@ def runs_create(h):
     )
 
 
-@route("POST", "/api/runs/status/update")
+@route("POST", "/api/runs/status/update", need="write")
 def runs_status(h):
     b = h.read_json()
     h.store.set_status(h.run_id(b), b.get("status"), b.get("statusMetadata"))
     h.send_json({"success": True})
 
 
-@route("POST", "/api/runs/logName/add")
+@route("POST", "/api/runs/logName/add", need="write")
 def runs_log_name(h):
     b = h.read_json()
     h.store.declare_series(h.run_id(b), b.get("logName"), b.get("logType"))
     h.send_json({"success": True})
 
 
-@route("POST", "/api/runs/modelGraph/create")
+@route("POST", "/api/runs/modelGraph/create", need="write")
 def runs_graph(h):
     b = h.read_json()
     if not isinstance(b.get("graph"), dict):
@@ -533,13 +571,13 @@ def runs_graph(h):
     h.send_json({"success": True})
 
 
-@route("POST", "/api/runs/trigger")
+@route("POST", "/api/runs/trigger", need="write")
 def runs_trigger(h):
     # Doubles as the client's heartbeat; a CANCELLED status tells it to stop.
     h.send_json({"status": h.store.heartbeat(h.run_id(h.read_json()))})
 
 
-@route("POST", "/api/runs/alert")
+@route("POST", "/api/runs/alert", need="write")
 def runs_alert(h):
     b = h.read_json()
     if not isinstance(b.get("alert"), dict):
@@ -548,22 +586,22 @@ def runs_alert(h):
     h.send_json({"success": True})
 
 
-@route("POST", "/ingest/metrics")
+@route("POST", "/ingest/metrics", need="write")
 def ingest_metrics(h):
     h.send_json({"ingested": h.store.ingest_metrics(h.run_id(), h.iter_json_lines())})
 
 
-@route("POST", "/ingest/data")
+@route("POST", "/ingest/data", need="write")
 def ingest_data(h):
     h.send_json({"ingested": h.store.ingest_data(h.run_id(), h.iter_json_lines())})
 
 
-@route("POST", "/ingest/logs")
+@route("POST", "/ingest/logs", need="write")
 def ingest_logs(h):
     h.send_json({"ingested": h.store.ingest_logs(h.run_id(), h.iter_json_lines())})
 
 
-@route("POST", "/files")
+@route("POST", "/files", need="write")
 def files_register(h):
     b = h.read_json()
     out = {}
@@ -572,12 +610,13 @@ def files_register(h):
     h.send_json(out)
 
 
-@route("PUT", "/api/files/<file_id>")
+@route("PUT", "/api/files/<file_id>", need="write")
 def files_upload(h, file_id):
     try:
         fid = int(file_id)
     except ValueError:
         raise HTTPError(404, "file not found")
+    h.check_run(h.store.get_file(fid)["run_id"])
     size = h.store.save_file(fid, h.iter_body(h.server.config.max_upload))
     h.send_json({"size": size})
 
@@ -595,44 +634,48 @@ def _int_path(value):
 @route("GET", "/api/files/<file_id>")
 def files_get(h, file_id):
     f = h.store.get_file(_int_path(file_id))
+    h.check_run(f["run_id"])
     h.send_file(f["path"], f"{f['name']}")
 
 
 @route("GET", "/api/projects")
 def projects_list(h):
-    h.send_json({"projects": h.store.list_projects()})
+    projects = h.store.list_projects()
+    if h.scope is not None:
+        projects = [p for p in projects if p["name"] == h.scope]
+    h.send_json({"projects": projects})
 
 
 @route("GET", "/api/projects/<project>/runs")
 def project_runs(h, project):
     h.send_json(
         h.store.list_runs(
-            project,
+            h.check_project(project),
             limit=max(1, min(h.int_arg("limit", 200), 1000)),
             offset=max(0, h.int_arg("offset", 0)),
         )
     )
 
 
-@route("DELETE", "/api/projects/<project>")
+@route("DELETE", "/api/projects/<project>", need="admin")
 def project_delete(h, project):
     h.send_json({"deleted_runs": h.store.delete_project(project)})
 
 
 @route("GET", "/api/runs/<run_id>")
 def run_get(h, run_id):
-    h.send_json(h.store.get_run(_int_path(run_id)))
+    h.send_json(h.store.get_run(h.run(run_id)))
 
 
-@route("DELETE", "/api/runs/<run_id>")
+@route("DELETE", "/api/runs/<run_id>", need="write")
 def run_delete(h, run_id):
-    h.store.delete_run(_int_path(run_id))
+    h.store.delete_run(h.run(run_id))
     h.send_json({"ok": True})
 
 
-@route("POST", "/api/runs/<run_id>/stop")
+@route("POST", "/api/runs/<run_id>/stop", need="write")
 def run_stop(h, run_id):
-    h.store.cancel_run(_int_path(run_id))
+    h.store.cancel_run(h.run(run_id))
     h.send_json({"ok": True})
 
 
@@ -643,7 +686,7 @@ def run_metrics(h, run_id):
         raise HTTPError(400, "pass 1 to 500 name parameters")
     h.send_json(
         h.store.read_metrics(
-            _int_path(run_id),
+            h.run(run_id),
             names,
             points=h.int_arg("points", 500),
             axis=h.arg("x", "step"),
@@ -655,7 +698,7 @@ def run_metrics(h, run_id):
 def run_data(h, run_id):
     h.send_json(
         h.store.read_data(
-            _int_path(run_id), h.arg("name", ""), limit=h.int_arg("limit", 64)
+            h.run(run_id), h.arg("name", ""), limit=h.int_arg("limit", 64)
         )
     )
 
@@ -664,7 +707,7 @@ def run_data(h, run_id):
 def run_files(h, run_id):
     h.send_json(
         h.store.read_files(
-            _int_path(run_id), h.arg("name", ""), limit=h.int_arg("limit", 500)
+            h.run(run_id), h.arg("name", ""), limit=h.int_arg("limit", 500)
         )
     )
 
@@ -675,7 +718,7 @@ def run_logs(h, run_id):
     h.send_json(
         {
             "lines": h.store.read_logs(
-                _int_path(run_id),
+                h.run(run_id),
                 after=int(after) if after and after.isdigit() else 0,
                 limit=h.int_arg("limit", 1000),
                 tail=after is None,
@@ -686,20 +729,27 @@ def run_logs(h, run_id):
 
 @route("GET", "/api/runs/<run_id>/graph")
 def run_graph(h, run_id):
-    h.send_json({"graph": h.store.get_graph(_int_path(run_id))})
+    h.send_json({"graph": h.store.get_graph(h.run(run_id))})
 
 
-@route("GET", "/api/keys")
+@route("GET", "/api/keys", need="admin")
 def keys_list(h):
     h.send_json({"keys": h.store.list_keys(), "current": h.key and h.key["id"]})
 
 
-@route("POST", "/api/keys")
+@route("POST", "/api/keys", need="admin")
 def keys_create(h):
-    h.send_json(h.store.create_key(str(h.read_json().get("name") or "").strip()))
+    b = h.read_json()
+    h.send_json(
+        h.store.create_key(
+            str(b.get("name") or "").strip(),
+            access=b.get("access") or None,
+            project=str(b.get("project") or "").strip() or None,
+        )
+    )
 
 
-@route("DELETE", "/api/keys/<key_id>")
+@route("DELETE", "/api/keys/<key_id>", need="admin")
 def keys_delete(h, key_id):
     key_id = _int_path(key_id)
     if h.key and h.key["id"] == key_id:
@@ -708,7 +758,7 @@ def keys_delete(h, key_id):
     h.send_json({"ok": True})
 
 
-@route("GET", "/api/stats")
+@route("GET", "/api/stats", need="admin")
 def stats(h):
     h.send_json(h.store.stats())
 
@@ -716,7 +766,17 @@ def stats(h):
 # -- open-ended read access: SQL -------------------------------------------
 
 
+def _scoped(h, project):
+    """The project a request is confined to: the key's, else the one asked for."""
+    if h.scope is not None:
+        if project not in (None, "", h.scope):
+            raise HTTPError(403, f"this API key is limited to the project {h.scope!r}")
+        return h.scope
+    return project or None
+
+
 def _run_query(h, sql, params, limit, fmt, project=None):
+    project = _scoped(h, project)
     if project is not None and (
         not isinstance(project, str) or not h.store.project_exists(project)
     ):
@@ -763,10 +823,12 @@ def query_post(h):
 
 @route("GET", "/api/agent/config")
 def agent_config(h):
-    h.send_json(agent.public_config(h.store))
+    public = agent.public_config(h.store)
+    # Everyone may know whether the assistant is usable; its setup is for admins.
+    h.send_json(public if h.access == "admin" else {"ready": public["ready"]})
 
 
-@route("PUT", "/api/agent/config")
+@route("PUT", "/api/agent/config", need="admin")
 def agent_config_update(h):
     try:
         agent.update_config(h.store, h.read_json())
@@ -775,7 +837,7 @@ def agent_config_update(h):
     h.send_json(agent.public_config(h.store))
 
 
-@route("GET", "/api/agent/models")
+@route("GET", "/api/agent/models", need="admin")
 def agent_models(h):
     try:
         models = llm.list_models(agent.load_config(h.store)["llm"])
@@ -786,12 +848,15 @@ def agent_models(h):
 
 @route("GET", "/api/chats")
 def chats(h):
-    h.send_json({"chats": h.store.list_chats()})
+    found = h.store.list_chats()
+    if h.scope is not None:
+        found = [c for c in found if c["project"] == h.scope]
+    h.send_json({"chats": found})
 
 
 @route("GET", "/api/chats/<chat_id>")
 def chat_get(h, chat_id):
-    chat = h.store.get_chat(_int_id(chat_id))
+    chat = _chat(h, chat_id)
     h.send_json({
         "id": chat["id"], "title": chat["title"], "project": chat["project"],
         "usage": chat["usage"],
@@ -799,10 +864,17 @@ def chat_get(h, chat_id):
     })
 
 
-@route("DELETE", "/api/chats/<chat_id>")
+@route("DELETE", "/api/chats/<chat_id>", need="write")
 def chat_delete(h, chat_id):
-    h.store.delete_chat(_int_id(chat_id))
+    h.store.delete_chat(_chat(h, chat_id)["id"])
     h.send_json({"ok": True})
+
+
+def _chat(h, chat_id):
+    chat = h.store.get_chat(_int_id(chat_id))
+    if h.scope is not None and chat["project"] != h.scope:
+        raise HTTPError(404, "no such conversation")
+    return chat
 
 
 def _int_id(value):
@@ -824,13 +896,14 @@ def chat_post(h):
         raise HTTPError(400, "message is too long")
     text = text.strip()
     if body.get("chat_id") is not None:
-        chat = h.store.get_chat(_int_id(str(body["chat_id"])))
+        chat = _chat(h, str(body["chat_id"]))
     else:
         # A new conversation is confined to one project for its whole life:
         # the one asked for, else the one on screen, else all projects.
         project = body.get("project")
         if project is None and "project" not in body:
             project = agent.page_project(h.store, body.get("context"))
+        project = _scoped(h, project)
         if project is not None and (
             not isinstance(project, str) or not h.store.project_exists(project)
         ):
@@ -878,7 +951,7 @@ def mcp_post(h):
             {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}},
             400,
         )
-    reply = mcp.handle(h.store, payload)
+    reply = mcp.handle(h.store, payload, h.scope)
     if reply is None:
         return h.send_body(202, b"", "application/json")
     h.send_json(reply)
@@ -900,7 +973,8 @@ class Server(ThreadingHTTPServer):
 
     def __init__(self, config, store=None):
         self.config = config
-        self.store = store or Store(config.data_dir)
+        self.store = store or Store(config.data_dir, secret=config.secret)
+        agent.encrypt_stored_secrets(self.store)
         self.static = Static(WEB_DIR)
         self._stop = threading.Event()
         self.agent_slots = threading.BoundedSemaphore(2)  # agent turns at once

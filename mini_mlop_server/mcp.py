@@ -98,7 +98,7 @@ def _csv(columns, rows):
     return out.getvalue()
 
 
-def _call(store, name, args):
+def _call(store, name, args, scope=None):
     if name == "projects":
         rows = [
             [
@@ -106,6 +106,7 @@ def _call(store, name, args):
                 time.strftime("%Y-%m-%d %H:%M", time.gmtime(p["last_activity"] / 1000)),
             ]
             for p in store.list_projects()
+            if scope is None or p["name"] == scope
         ]
         if not rows:
             return _text("There are no projects yet: nothing has been logged to this server.")
@@ -119,6 +120,10 @@ def _call(store, name, args):
             limit = 500
         params = args.get("params")
         project = args.get("project") or None
+        if scope is not None:
+            if project not in (None, scope):
+                return _text(f"Error: this API key is limited to the project {scope!r}.", True)
+            project = scope
         if project is not None and (
             not isinstance(project, str) or not store.project_exists(project)
         ):
@@ -144,7 +149,7 @@ def _error(msg_id, code, message):
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
 
 
-def _one(store, msg):
+def _one(store, msg, scope=None):
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
         return _error(None, -32600, "invalid request")
     method, msg_id = msg.get("method"), msg.get("id")
@@ -165,7 +170,7 @@ def _one(store, msg):
         result = {"tools": TOOLS}
     elif method == "tools/call":
         args = params.get("arguments")
-        result = _call(store, params.get("name"), args if isinstance(args, dict) else {})
+        result = _call(store, params.get("name"), args if isinstance(args, dict) else {}, scope)
         if result is None:
             return _error(msg_id, -32602, f"unknown tool: {params.get('name')}")
     else:
@@ -173,12 +178,14 @@ def _one(store, msg):
     return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
 
-def handle(store, payload):
-    """Returns the JSON-RPC response for a POSTed payload, or None when the
+def handle(store, payload, scope=None):
+    """`scope` confines every tool to one project (a project-bound API key).
+
+    Returns the JSON-RPC response for a POSTed payload, or None when the
     payload held only notifications (the HTTP answer is then 202)."""
     if isinstance(payload, list):
         if not payload:
             return _error(None, -32600, "invalid request")
-        replies = [r for r in (_one(store, m) for m in payload) if r is not None]
+        replies = [r for r in (_one(store, m, scope) for m in payload) if r is not None]
         return replies or None
-    return _one(store, payload)
+    return _one(store, payload, scope)

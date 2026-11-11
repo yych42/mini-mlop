@@ -8,7 +8,7 @@ import time
 
 from . import __version__
 from .app import Config, make_server
-from .store import Store
+from .store import Invalid, Store
 
 DEFAULT_DATA = os.path.join("~", ".mini-mlop", "server")
 
@@ -86,6 +86,13 @@ def build_parser():
     ksub.add_parser("list", help="list keys")
     kc = ksub.add_parser("create", help="create a key and print it once")
     kc.add_argument("name", nargs="?", default="default")
+    kc.add_argument("--project", help="limit the key to one project")
+    kc.add_argument(
+        "--access",
+        choices=("read", "write", "admin"),
+        help="read: view and query; write: also log, stop and delete runs; admin: "
+        "everything (default: write with --project, otherwise admin)",
+    )
     kr = ksub.add_parser("revoke", help="revoke a key by id")
     kr.add_argument("id", type=int)
     return p
@@ -104,11 +111,23 @@ def keys_command(args):
                     if k["last_used_at"]
                     else "never"
                 )
-                print(f"{k['id']:>4}  {k['hint']:<16} last used {used:<10}  {k['name']}")
+                scope = k["project"] or "all projects"
+                print(
+                    f"{k['id']:>4}  {k['hint']:<20} {k['access']:<6} {scope:<20} "
+                    f"last used {used:<10}  {k['name']}"
+                )
         elif args.action == "create":
-            k = store.create_key(args.name)
+            try:
+                k = store.create_key(args.name, access=args.access, project=args.project)
+            except Invalid as e:
+                sys.exit(f"mini-mlop-server: {e}")
             print(k["key"])
-            print(f"key {k['id']} ({k['name']}) created; it is not shown again", file=sys.stderr)
+            scope = f"project {k['project']}" if k["project"] else "all projects"
+            print(
+                f"key {k['id']} ({k['name']}: {k['access']}, {scope}) created; "
+                "it is not shown again",
+                file=sys.stderr,
+            )
         elif args.action == "revoke":
             store.delete_key(args.id)
             print(f"key {args.id} revoked", file=sys.stderr)
@@ -126,6 +145,7 @@ def serve(args):
         max_upload_mb=args.max_upload_mb,
         public_url=args.public_url,
         verbose=args.verbose,
+        secret=os.environ.get("MINI_MLOP_SECRET_KEY") or None,
     )
     try:
         server = make_server(config)
@@ -137,6 +157,9 @@ def serve(args):
     print(f"mini-mlop-server {__version__}")
     print(f"  data  {server.store.dir}")
     print(f"  open  {url}")
+    if server.store.box.source == "keyfile":
+        print("  note  MINI_MLOP_SECRET_KEY is not set: saved provider keys are encrypted with a")
+        print("        key file kept next to the database. Set it to protect copies and backups.")
     if not config.auth:
         print("  auth  DISABLED: anyone who can reach this port can read and write")
     elif server.store.count_keys() == 0:

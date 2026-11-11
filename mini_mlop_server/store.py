@@ -23,8 +23,9 @@ import time
 from contextlib import contextmanager
 
 from .query import QueryEngine
+from .secretbox import SecretBox
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(
@@ -38,7 +39,9 @@ CREATE TABLE IF NOT EXISTS api_keys(
     hash TEXT NOT NULL UNIQUE,
     hint TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    last_used_at INTEGER
+    last_used_at INTEGER,
+    access TEXT NOT NULL DEFAULT 'admin',  -- admin | write | read
+    project TEXT                           -- NULL = every project
 );
 
 CREATE TABLE IF NOT EXISTS projects(
@@ -145,6 +148,7 @@ CREATE TABLE IF NOT EXISTS chats(
 );
 """
 
+ACCESS = {"read": 1, "write": 2, "admin": 3}
 ACTIVE = "RUNNING"
 STATUSES = ("RUNNING", "COMPLETED", "FAILED", "TERMINATED", "CANCELLED")
 FILE_KINDS = {
@@ -216,7 +220,7 @@ def _name(value, what="name"):
 
 
 class Store:
-    def __init__(self, data_dir, readers=4):
+    def __init__(self, data_dir, readers=4, secret=None):
         self.dir = os.path.abspath(os.path.expanduser(data_dir))
         self.files_dir = os.path.join(self.dir, "files")
         os.makedirs(self.files_dir, exist_ok=True)
@@ -254,7 +258,9 @@ class Store:
         self.sql = QueryEngine(self.path)  # opens its connection on first use
         self.sql_scoped = QueryEngine(self.path, scoped=True)
 
+        self.box = SecretBox(self.dir, secret)
         self._series = {}  # (run_id, name) -> series id
+        self._run_projects = {}  # run id -> project name (never changes)
         self._runs = set()  # run ids known to exist
         self._beats = {}  # run id -> last heartbeat written (ms)
 
@@ -268,6 +274,10 @@ class Store:
                 f"{self.path} was written by a newer mini-mlop server "
                 f"(schema {version}, this build understands {SCHEMA_VERSION})"
             )
+        columns = [r[1] for r in self._w.execute("PRAGMA table_info(api_keys)")]
+        if "access" not in columns:  # keys made before access levels are admins
+            self._w.execute("ALTER TABLE api_keys ADD COLUMN access TEXT NOT NULL DEFAULT 'admin'")
+            self._w.execute("ALTER TABLE api_keys ADD COLUMN project TEXT")
         columns = [r[1] for r in self._w.execute("PRAGMA table_info(chats)")]
         if "project" not in columns:  # databases created at schema 2
             self._w.execute("ALTER TABLE chats ADD COLUMN project TEXT")
@@ -394,22 +404,53 @@ class Store:
 
     # -- api keys ---------------------------------------------------------
 
-    def create_key(self, name):
+    def create_key(self, name, access=None, project=None):
+        """`project` confines the key to one project. Access is "read",
+        "write" (log runs, stop and delete them) or "admin" (everything,
+        including keys and settings; only for keys not tied to a project)."""
         name = _name(name or "default", "key name")
+        project = _name(project, "project") if project else None
+        access = access or ("write" if project else "admin")
+        if access not in ACCESS:
+            raise Invalid("access must be read, write or admin")
+        if access == "admin" and project:
+            raise Invalid("an admin key cannot be limited to one project")
         key = KEY_PREFIX + secrets.token_urlsafe(24)
         with self._write() as w:
             cur = w.execute(
-                "INSERT INTO api_keys(name, hash, hint, created_at) VALUES(?,?,?,?)",
-                (name, hash_key(key), key[:9] + "…" + key[-4:], now_ms()),
+                "INSERT INTO api_keys(name, hash, hint, created_at, access, project) "
+                "VALUES(?,?,?,?,?,?)",
+                (name, hash_key(key), key[:14] + "…" + key[-4:], now_ms(), access, project),
             )
-        return {"id": cur.lastrowid, "name": name, "key": key}
+        return {
+            "id": cur.lastrowid, "name": name, "key": key,
+            "access": access, "project": project,
+        }
+
+    def run_project(self, run_id):
+        """The name of the project a run belongs to."""
+        name = self._run_projects.get(run_id)
+        if name is None:
+            with self._read() as r:
+                row = r.execute(
+                    "SELECT p.name FROM runs r JOIN projects p ON p.id=r.project_id "
+                    "WHERE r.id=?",
+                    (run_id,),
+                ).fetchone()
+            if row is None:
+                raise NotFound(f"run {run_id} not found")
+            name = row[0]
+            if len(self._run_projects) > 50_000:
+                self._run_projects.clear()
+            self._run_projects[run_id] = name
+        return name
 
     def check_key(self, key):
         if not key:
             return None
         with self._read() as r:
             row = r.execute(
-                "SELECT id, name, last_used_at FROM api_keys WHERE hash=?",
+                "SELECT id, name, last_used_at, access, project FROM api_keys WHERE hash=?",
                 (hash_key(key),),
             ).fetchone()
         if row is None:
@@ -420,14 +461,17 @@ class Store:
                     "UPDATE api_keys SET last_used_at=? WHERE id=?",
                     (now_ms(), row["id"]),
                 )
-        return {"id": row["id"], "name": row["name"]}
+        return {
+            "id": row["id"], "name": row["name"],
+            "access": row["access"], "project": row["project"],
+        }
 
     def list_keys(self):
         with self._read() as r:
             return [
                 dict(row)
                 for row in r.execute(
-                    "SELECT id, name, hint, created_at, last_used_at "
+                    "SELECT id, name, hint, created_at, last_used_at, access, project "
                     "FROM api_keys ORDER BY id"
                 )
             ]

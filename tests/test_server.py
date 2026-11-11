@@ -274,7 +274,7 @@ def test_file_names_cannot_escape_the_data_directory(api, server):
     for root, _, names in os.walk(server.store.dir):
         stored += [os.path.join(root, n) for n in names]
     inside = os.path.join(server.store.files_dir, str(run_id))
-    blobs = [p for p in stored if not os.path.basename(p).startswith("mini-mlop.db")]
+    blobs = [p for p in stored if not os.path.basename(p).startswith(("mini-mlop.db", "secret."))]
     assert blobs and all(os.path.dirname(p) == inside for p in blobs)
     assert all(os.path.basename(p).split(".")[0].isdigit() for p in blobs)
 
