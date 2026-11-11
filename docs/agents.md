@@ -71,8 +71,8 @@ with `{"error": "..."}`; SQL mistakes carry SQLite's own message so they can be 
 - **Run forever.** A query is stopped after 10 seconds, and one query runs at a time so a heavy
   one cannot slow logging or the UI.
 
-Anyone holding an API key can read every project through this interface — the same access the
-rest of the API gives.
+A key sees through this interface exactly what it sees elsewhere: every project, or just its own
+if it is limited to one.
 
 ## MCP
 
@@ -106,7 +106,12 @@ project conversation every table holds only that project's rows, so the assistan
 another project's runs by accident or by being told to. Choose **All projects** in the picker for
 questions that span projects. Conversations are listed under the project they belong to.
 
-The MCP endpoint, the `mini-mlop query` command and the HTTP endpoint see every project unless
+**Keys limited to a project.** An API key can be bound to one project (see
+[access levels](server.md#access-levels-and-project-keys)). With such a key, everything on this
+page is confined to that project automatically and cannot be widened: SQL, MCP and the assistant.
+A read key for one project is the right thing to hand an outside agent.
+
+Otherwise, the MCP endpoint, the `mini-mlop query` command and the HTTP endpoint see every project unless
 you name one, in which case they are confined the same way: the `project` argument of the MCP
 `query` tool, `mini-mlop query --project NAME`, or `"project": "NAME"` in the request body.
 
@@ -129,11 +134,12 @@ What to know before turning it on:
 
 - **Data leaves your server.** Your question, and the run names, configs, metric values and log
   lines the assistant looks up, are sent to the provider you choose.
-- **Keys are stored in the server's database**, unencrypted, readable by anyone with access to the
-  data directory. They are never returned by the API and cannot be read through the query
-  interface.
+- **Provider keys are stored encrypted** and are never returned by the API or readable through
+  the query interface. Set `MINI_MLOP_SECRET_KEY` on the server so that a copy of the data
+  directory does not reveal them; see [Secrets](server.md#secrets).
 - **Spending is capped** by a daily token limit (default 2,000,000) and 12 model calls per
-  question. Anyone with an API key to your server can use the assistant.
+  question. Anyone with an API key to your server can use the assistant; only admin keys can
+  change its provider, model or sandbox.
 - Answers arrive a step at a time, not word by word.
 
 ### Code sandbox

@@ -48,6 +48,11 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// Who is signed in: {auth, key, access: "read" | "write" | "admin", project}.
+let session = null;
+const who = async () => (session ??= await api("/api/me"));
+const canWrite = async () => (await who()).access !== "read";
+
 const q = (params) =>
   params.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
 
@@ -183,6 +188,7 @@ function chartCard(title) {
 
 // -- views -------------------------------------------------------------------
 async function showLogin(message) {
+  session = null;
   generation++;
   cleanups.splice(0).forEach((fn) => fn());
   setCrumbs();
@@ -337,7 +343,7 @@ async function viewProject(project) {
   put(view, 
     h("div", { class: "head" }, h("h1", {}, project),
       h("span", { class: "sub" }, `${total} run${total === 1 ? "" : "s"}`), hint, h("span", { class: "grow" }),
-      h("button", { class: "danger", onclick: async () => {
+      (await who()).access !== "admin" ? null : h("button", { class: "danger", onclick: async () => {
         if (!confirm(`Delete project "${project}" and all ${total} of its runs? This cannot be undone.`)) return;
         await api(base, { method: "DELETE" });
         location.hash = "#/";
@@ -383,16 +389,17 @@ async function viewRun(id, tab) {
     await api(`/api/runs/${id}/stop`, { method: "POST" });
     route();
   } }, "Stop run");
+  const writable = await canWrite();
   const paintHead = () => {
     put(status, statusBadge(run), " ", h("span", { class: "sub" }, `· started ${ago(run.created_at)} · ${runDuration(run)}`));
-    stop.hidden = run.status !== "RUNNING";
+    stop.hidden = !writable || run.status !== "RUNNING";
   };
   paintHead();
 
   const body = h("div");
   put(view, 
     h("div", { class: "head" }, h("h1", {}, run.name), status, h("span", { class: "grow" }), stop,
-      h("button", { class: "danger", onclick: async () => {
+      !writable ? null : h("button", { class: "danger", onclick: async () => {
         if (!confirm(`Delete run "${run.name}" and everything it logged? This cannot be undone.`)) return;
         await api(`/api/runs/${id}`, { method: "DELETE" });
         location.hash = `#/projects/${encodeURIComponent(run.project)}`;
@@ -635,23 +642,48 @@ function runOverview(run, body) {
 
 async function viewSettings() {
   setCrumbs(["Settings"]);
-  const [me, keys, stats] = await Promise.all([api("/api/me"), api("/api/keys"), api("/api/stats")]);
-  const assistant = await agentSettings(me);
-  const fresh = h("div");
-  const name = h("input", { type: "text", placeholder: "Key name, e.g. laptop", "aria-label": "Key name", maxlength: "64" });
-  put(view, 
+  session = null;
+  const me = await who();
+  const head = [
     h("div", { class: "head" }, h("h1", {}, "Settings"), h("span", { class: "grow" }),
       me.auth ? h("button", { onclick: async () => { await api("/api/logout", { method: "POST" }); showLogin(); } }, "Sign out") : null),
     h("h2", { style: "margin-top:0" }, "Connect a training script"),
     h("div", { class: "card pad" }, h("pre", {},
       `pip install git+https://github.com/yych42/mini-mlop.git\nexport MINI_MLOP_URL=${me.url}\n${me.auth ? "mini-mlop login   # paste an API key once per machine\n" : ""}`)),
+  ];
+  if (me.access !== "admin") {
+    // Keys, the assistant's provider and storage are for admin keys.
+    put(view, head, h("h2", {}, "This key"),
+      h("div", { class: "card pad" }, kv({ name: me.key, access: me.access, project: me.project || "all projects" }),
+        h("p", { class: "muted" }, "Server settings and API keys are managed with an admin key.")));
+    return;
+  }
+  const [keys, stats, projects] = await Promise.all([api("/api/keys"), api("/api/stats"), api("/api/projects")]);
+  const assistant = await agentSettings(me);
+  const fresh = h("div");
+  const name = h("input", { type: "text", placeholder: "Key name, e.g. laptop", "aria-label": "Key name", maxlength: "64" });
+  const access = h("select", { "aria-label": "Access" },
+    h("option", { value: "admin" }, "Admin: everything"),
+    h("option", { value: "write" }, "Write: log, stop and delete runs"),
+    h("option", { value: "read" }, "Read: view and query only"));
+  const scope = h("input", { type: "text", placeholder: "All projects", "aria-label": "Project", list: "key-projects", maxlength: "200" });
+  const syncAccess = () => {
+    const bound = !!scope.value.trim();
+    access.options[0].disabled = bound;  // admin keys are never tied to a project
+    if (bound && access.value === "admin") access.value = "write";
+  };
+  scope.addEventListener("input", syncAccess);
+  put(view, 
+    head,
     h("h2", {}, "API keys"),
     me.auth ? null : h("p", { class: "error" }, "Authentication is disabled (--no-auth): anyone who can reach this server can read and write. Keys are not checked."),
     h("div", { class: "card tablewrap" }, h("table", {},
-      h("thead", {}, h("tr", {}, h("th", {}, "Name"), h("th", {}, "Key"), h("th", {}, "Created"), h("th", {}, "Last used"), h("th", {}))),
+      h("thead", {}, h("tr", {}, h("th", {}, "Name"), h("th", {}, "Key"), h("th", {}, "Access"), h("th", {}, "Project"), h("th", {}, "Created"), h("th", {}, "Last used"), h("th", {}))),
       h("tbody", {}, keys.keys.map((k) => h("tr", {},
         h("td", {}, k.name, k.id === keys.current ? h("span", { class: "muted" }, "  (this session)") : null),
         h("td", { class: "mono" }, k.hint),
+        h("td", {}, k.access),
+        h("td", { class: k.project ? "" : "muted" }, k.project || "all"),
         h("td", { class: "muted" }, new Date(k.created_at).toLocaleDateString()),
         h("td", { class: "muted" }, k.last_used_at ? ago(k.last_used_at) : "never"),
         h("td", {}, k.id === keys.current ? null : h("button", { class: "danger", onclick: async () => {
@@ -661,12 +693,19 @@ async function viewSettings() {
         } }, "Revoke"))))))),
     h("form", { class: "row", style: "margin-top:12px", onsubmit: async (e) => {
       e.preventDefault();
-      const k = await api("/api/keys", { method: "POST", body: { name: name.value.trim() || "unnamed" } });
-      put(fresh, h("div", { class: "card pad", style: "margin-top:12px" },
-        h("b", {}, `Key "${k.name}" created.`), " Copy it now; it is not shown again.",
-        h("div", { class: "keybox" }, k.key)));
-      name.value = "";
-    } }, name, h("button", { class: "primary", type: "submit" }, "Create key")),
+      try {
+        const k = await api("/api/keys", { method: "POST", body: { name: name.value.trim() || "unnamed", access: access.value, project: scope.value.trim() } });
+        put(fresh, h("div", { class: "card pad", style: "margin-top:12px" },
+          h("b", {}, `Key "${k.name}" created`), ` (${k.access}, ${k.project || "all projects"}). Copy it now; it is not shown again.`,
+          h("div", { class: "keybox" }, k.key)));
+        name.value = "";
+      } catch (ex) {
+        put(fresh, h("p", { class: "error" }, ex.message));
+      }
+    } }, name, scope, h("datalist", { id: "key-projects" }, projects.projects.map((p) => h("option", { value: p.name }))),
+      access, h("button", { class: "primary", type: "submit" }, "Create key")),
+    h("p", { class: "muted" }, "Name a project to limit a key to it: the key can then log to, read and ask about that project only. " +
+      "Give teammates and training jobs their own keys, and agents a read key."),
     fresh,
     assistant,
     h("h2", {}, "Storage"),
@@ -768,6 +807,6 @@ async function route() {
   }
 }
 
-initAgent({ h, put, api, Unauthorized, onUnauthorized: () => showLogin() });
+initAgent({ h, put, api, who, Unauthorized, onUnauthorized: () => showLogin() });
 window.addEventListener("hashchange", route);
 route();

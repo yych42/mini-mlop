@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mini-mlop"
 version = "0.1.0"
-description = "Lightweight, self-hosted ML experiment tracking: a Python logger and a single-process server that fits on a Raspberry Pi."
+description = "Lightweight, self-hosted ML experiment tracking: a Python logger and a dependency-free single-process server, with a query interface built for agents."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]

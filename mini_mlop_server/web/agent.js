@@ -2,12 +2,12 @@
 // rendered by building DOM nodes from a small Markdown subset; nothing it
 // produces is ever treated as HTML.
 
-let h, put, api, Unauthorized, onUnauthorized;
+let h, put, api, who, Unauthorized, onUnauthorized;
 let panel, log, input, sendButton, picker, scopePicker, chatId = null, busy = false;
 let scope = null;  // project a new conversation is confined to; null = all projects
 
 export function initAgent(deps) {
-  ({ h, put, api, Unauthorized, onUnauthorized } = deps);
+  ({ h, put, api, who, Unauthorized, onUnauthorized } = deps);
   document.getElementById("nav-ask").addEventListener("click", (e) => {
     e.preventDefault();
     toggle();
@@ -131,8 +131,11 @@ async function pageProject() {
 async function loadScopes() {
   const { projects } = await api("/api/projects");
   const names = projects.map((p) => p.name);
-  if (scope !== null && !names.includes(scope)) scope = null;
-  put(scopePicker, h("option", { value: "" }, "All projects"), names.map((n) => h("option", { value: `p:${n}` }, n)));
+  const bound = (await who()).project;  // a project key never leaves its project
+  if (bound) scope = bound;
+  else if (scope !== null && !names.includes(scope)) scope = null;
+  put(scopePicker, bound ? null : h("option", { value: "" }, "All projects"),
+    (bound ? [bound] : names).map((n) => h("option", { value: `p:${n}` }, n)));
   scopePicker.value = scope === null ? "" : `p:${scope}`;
 }
 
@@ -350,7 +353,10 @@ export async function agentSettings(me) {
       boxNote, boxFields,
       h("h3", {}, "Spending"),
       h("div", { class: "formgrid" }, h("label", {}, h("span", {}, "Daily token limit (0 = none)"), limit)),
-      h("p", { class: "muted" }, `Used today: ${state.tokens_today.toLocaleString()} tokens. Stored keys are kept in this server's database and are never shown again.`),
+      h("p", { class: "muted" }, `Used today: ${state.tokens_today.toLocaleString()} tokens. Saved keys are stored encrypted and are never shown again. ` +
+        (state.encryption === "env" ? "They are unlocked by MINI_MLOP_SECRET_KEY."
+          : "They are unlocked by a key file next to the database; set MINI_MLOP_SECRET_KEY on the server to protect copies and backups too.")),
+      state.unreadable.length ? h("p", { class: "error" }, "A saved key can no longer be decrypted (was MINI_MLOP_SECRET_KEY changed?). Enter it again and save.") : null,
       h("div", { class: "row" }, h("button", { class: "primary", type: "submit" }, "Save"), status)),
     h("h2", {}, "Connect an outside agent"),
     h("div", { class: "card pad" },

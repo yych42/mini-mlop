@@ -20,6 +20,7 @@ and running `python -m mini_mlop_server` next to it works too.
 | `--stale-after SECONDS` | | `300` | Mark a run failed after this long with no heartbeat |
 | `--max-upload-mb N` | | `2048` | Largest accepted file or ingest request |
 | `--verbose` | | off | Log every request |
+| | `MINI_MLOP_SECRET_KEY` | key file | Secret that unlocks saved provider keys; see [Secrets](#secrets) |
 
 ## API keys
 
@@ -42,16 +43,73 @@ These work whether or not the server is running (pass the same `--data` if you c
 lost key is never a lock-out. Keys can also be created and revoked from **Settings** in the web
 UI. Only a SHA-256 hash of each key is stored.
 
-The same key signs you in to the web UI. There are no user accounts: anyone holding a key can
-read, write and delete everything. Give each person or machine its own key so one can be revoked
-without disturbing the others.
+The same key signs you in to the web UI. There are no user accounts; a key is the identity. Give
+each person, training job and agent its own, so one can be revoked without disturbing the others.
+
+### Access levels and project keys
+
+A key has an access level, and can be limited to one project:
+
+| Access | Can |
+|---|---|
+| `read` | View runs, charts, files and logs; query; use MCP and the assistant |
+| `write` | Everything `read` can, plus log runs and stop or delete them |
+| `admin` | Everything, including creating and revoking keys, assistant settings and deleting projects |
+
+```bash
+mini-mlop-server keys create ci-mnist --project mnist                 # write, mnist only
+```
+
+```bash
+mini-mlop-server keys create agent --project mnist --access read      # read, mnist only
+```
+
+```bash
+mini-mlop-server keys create dashboard --access read                  # read, every project
+```
+
+A key limited to a project can only log to that project, and everything else on the server is
+invisible to it: other projects' runs, files and assistant conversations return "not found", and
+its queries (SQL, MCP, the assistant) see only its project's rows. Admin keys are never limited to
+a project. The first key the server prints, and any key made before access levels existed, is an
+admin key.
+
+What this is for: keeping teammates and jobs out of each other's projects by accident, and giving
+agents least privilege. It is not a multi-tenant boundary for people who distrust each other;
+everyone shares one server, one disk and one assistant budget.
 
 `--no-auth` is for a machine only you can reach (a laptop, or a private tailnet). With it, anyone
 who can connect to the port can read and delete your data.
 
+## Secrets
+
+The server stores two kinds of secret, differently:
+
+- **Its own API keys** are stored only as hashes and cannot be recovered.
+- **Keys it must send elsewhere** (the assistant's model-provider key and a sandbox runner token)
+  are stored encrypted, because the server needs the original value.
+
+Set `MINI_MLOP_SECRET_KEY` to a long random value to control that encryption:
+
+```bash
+export MINI_MLOP_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+```
+
+With it set, a copy of the data directory or a backup does not reveal the provider keys. Keep the
+value somewhere other than the data directory (your process manager's environment, a secret
+store) and keep it stable: if it changes, the saved keys cannot be read and Settings will ask for
+them again.
+
+Without it, the server generates `secret.key` in the data directory and uses that. A stray copy of
+the database file alone is then still safe, but a copy of the whole directory is not.
+
+The encryption is built from the Python standard library (scrypt, SHAKE-256, HMAC-SHA-256) so the
+server stays free of dependencies. It protects data at rest; it does not protect against someone
+who can read the server's memory or environment.
+
 ## Keeping it running
 
-**systemd** (Raspberry Pi OS, Debian, Ubuntu…): [`deploy/mini-mlop-server.service`](../deploy/mini-mlop-server.service)
+**systemd** (Debian, Ubuntu, Raspberry Pi OS…): [`deploy/mini-mlop-server.service`](../deploy/mini-mlop-server.service)
 has the unit and the four commands to install it in its header.
 
 **Docker**: from the repository root,
@@ -107,6 +165,6 @@ server and run `sqlite3 mini-mlop.db "VACUUM"`.
 - One writer: SQLite serialises writes. On desktop hardware that is hundreds of thousands of
   points per second, which is far more than a small team produces; it is not a design for hundreds
   of simultaneous heavy trainers.
-- No per-user permissions, no retention policies, no e-mail.
+- No user accounts (keys carry the access level), no retention policies, no e-mail.
 - Charts are downsampled on read by scanning the series, so a 10-million-point series takes
   proportionally longer to draw than a 100,000-point one.

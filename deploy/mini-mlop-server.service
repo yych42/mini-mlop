@@ -1,4 +1,4 @@
-# systemd unit for running the mini-mlop server on a Raspberry Pi or any Linux box.
+# systemd unit for running the mini-mlop server on any Linux box.
 #
 #   sudo useradd --system --create-home --home-dir /var/lib/mini-mlop mini-mlop
 #   sudo -u mini-mlop python3 -m venv /var/lib/mini-mlop/venv

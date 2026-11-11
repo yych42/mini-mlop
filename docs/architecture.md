@@ -62,6 +62,10 @@ server's origin.
 **API keys only.** Keys are random 192-bit tokens stored as SHA-256 hashes. The web UI signs in
 with the same key, held in an `HttpOnly; SameSite=Strict` cookie; cookie-authenticated writes
 are additionally refused when the `Origin` header names another site.
+Each key has an access level (read, write, admin) checked per route, and may be bound to one
+project, in which case handlers treat everything outside that project as nonexistent and queries
+run on the project-confined connection. Secrets the server must be able to send onward (model
+provider keys) are encrypted with a key derived from `MINI_MLOP_SECRET_KEY`.
 
 **Heartbeats.** The client checks in every few seconds. A run silent for `--stale-after` seconds
 is shown as failed ("Stalled"), and flips back to running if the client returns — a laptop lid
@@ -111,7 +115,7 @@ Read by the UI (and usable from scripts):
 
 ## Not built yet
 
-Roughly in the order they seem worth doing: measurements on real Raspberry Pi hardware; retention
+Roughly in the order they seem worth doing: retention
 rules (auto-delete or thin old runs); pre-aggregated rollups for very long series; run tags, notes
 and search; adapters for vendor sandbox APIs; token-by-token streaming and charts in assistant answers; alert forwarding from the server; a published PyPI package and container
 image.
