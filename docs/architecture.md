@@ -105,10 +105,13 @@ Read by the UI (and usable from scripts):
 | `POST /api/runs/<id>/stop`, `DELETE /api/runs/<id>`, `DELETE /api/projects/<name>` | |
 | `GET/POST /api/keys`, `DELETE /api/keys/<id>`, `GET /api/stats`, `GET /api/me` | |
 | `GET/POST /api/query`, `GET /api/query/schema` | Read-only SQL; see [agents.md](agents.md) |
+| `POST /mcp` | Model Context Protocol (tools: `schema`, `query`) |
+| `GET/PUT /api/agent/config`, `GET /api/agent/models` | Assistant settings |
+| `POST /api/chat`, `GET /api/chats`, `GET/DELETE /api/chats/<id>` | Assistant conversations; `POST` streams NDJSON events |
 
 ## Not built yet
 
 Roughly in the order they seem worth doing: measurements on real Raspberry Pi hardware; retention
 rules (auto-delete or thin old runs); pre-aggregated rollups for very long series; run tags, notes
-and search; an MCP endpoint and a chat panel on top of the query interface; alert forwarding from the server; a published PyPI package and container
+and search; adapters for vendor sandbox APIs; token-by-token streaming and charts in assistant answers; alert forwarding from the server; a published PyPI package and container
 image.

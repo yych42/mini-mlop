@@ -20,7 +20,7 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from . import __version__
+from . import __version__, agent, llm, mcp
 from .query import QueryError, describe as describe_query
 from .store import Invalid, NotFound, Store
 
@@ -333,6 +333,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if not self.head:
             self.wfile.write(body)
+
+    def start_stream(self, ctype="application/x-ndjson"):
+        """Begin a response whose length is not known up front. The
+        connection closes when the handler returns."""
+        self.drain()
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")  # ask proxies not to buffer
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+    def send_event(self, obj):
+        self.wfile.write(json.dumps(obj, separators=(",", ":")).encode() + b"\n")
+        self.wfile.flush()
 
     def send_json(self, obj, status=200, headers=()):
         self.send_body(
@@ -737,6 +754,128 @@ def query_post(h):
     )
 
 
+# -- the built-in agent ------------------------------------------------------
+
+
+@route("GET", "/api/agent/config")
+def agent_config(h):
+    h.send_json(agent.public_config(h.store))
+
+
+@route("PUT", "/api/agent/config")
+def agent_config_update(h):
+    try:
+        agent.update_config(h.store, h.read_json())
+    except agent.AgentError as e:
+        raise HTTPError(400, str(e))
+    h.send_json(agent.public_config(h.store))
+
+
+@route("GET", "/api/agent/models")
+def agent_models(h):
+    try:
+        models = llm.list_models(agent.load_config(h.store)["llm"])
+    except llm.LLMError as e:
+        raise HTTPError(502, str(e))
+    h.send_json({"models": models})
+
+
+@route("GET", "/api/chats")
+def chats(h):
+    h.send_json({"chats": h.store.list_chats()})
+
+
+@route("GET", "/api/chats/<chat_id>")
+def chat_get(h, chat_id):
+    chat = h.store.get_chat(_int_id(chat_id))
+    h.send_json({
+        "id": chat["id"], "title": chat["title"], "usage": chat["usage"],
+        "messages": agent.transcript(chat["messages"]),
+    })
+
+
+@route("DELETE", "/api/chats/<chat_id>")
+def chat_delete(h, chat_id):
+    h.store.delete_chat(_int_id(chat_id))
+    h.send_json({"ok": True})
+
+
+def _int_id(value):
+    try:
+        return int(value)
+    except ValueError:
+        raise HTTPError(404, "not found")
+
+
+@route("POST", "/api/chat")
+def chat_post(h):
+    """Send a message to the agent. The response is newline-delimited JSON
+    events: chat, text, tool_call, tool_result, notice, error, done."""
+    body = h.read_json()
+    text = body.get("message")
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPError(400, "message is required")
+    if len(text) > 20_000:
+        raise HTTPError(400, "message is too long")
+    text = text.strip()
+    if body.get("chat_id") is not None:
+        chat = h.store.get_chat(_int_id(str(body["chat_id"])))
+    else:
+        chat = h.store.get_chat(h.store.create_chat(text.split("\n")[0][:80]))
+    if not h.server.agent_slots.acquire(blocking=False):
+        raise HTTPError(429, "the agent is busy with other questions; try again in a moment")
+    try:
+        h.start_stream()
+        connected = True
+
+        def emit(event):
+            nonlocal connected
+            if connected:
+                try:
+                    h.send_event(event)
+                except (BrokenPipeError, ConnectionError, socket.timeout):
+                    connected = False  # finish the turn anyway so it is saved
+
+        emit({"type": "chat", "id": chat["id"], "title": chat["title"]})
+        try:
+            agent.run_turn(h.store, chat, text, body.get("context"), emit)
+        except (agent.AgentError, llm.LLMError) as e:
+            emit({"type": "error", "text": str(e)})
+        except Exception as e:
+            h.log_error("agent turn failed: %r", e)
+            emit({"type": "error", "text": "the agent hit an internal error"})
+        finally:
+            h.store.save_chat(chat["id"], chat["messages"], chat.get("usage") or {})
+        emit({"type": "done", "usage": chat.get("usage") or {}})
+    finally:
+        h.server.agent_slots.release()
+
+
+# -- Model Context Protocol ----------------------------------------------------
+
+
+@route("POST", "/mcp")
+def mcp_post(h):
+    raw = b"".join(h.iter_body(MAX_JSON_BODY))
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return h.send_json(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}},
+            400,
+        )
+    reply = mcp.handle(h.store, payload)
+    if reply is None:
+        return h.send_body(202, b"", "application/json")
+    h.send_json(reply)
+
+
+@route("GET", "/mcp")
+def mcp_get(h):
+    # No server-initiated messages, so there is no event stream to open.
+    h.send_body(405, b"", "application/json", [("Allow", "POST")])
+
+
 # -- server ----------------------------------------------------------------
 
 
@@ -750,6 +889,7 @@ class Server(ThreadingHTTPServer):
         self.store = store or Store(config.data_dir)
         self.static = Static(WEB_DIR)
         self._stop = threading.Event()
+        self.agent_slots = threading.BoundedSemaphore(2)  # agent turns at once
         if ":" in config.host:
             self.address_family = socket.AF_INET6
         super().__init__((config.host, config.port), Handler)

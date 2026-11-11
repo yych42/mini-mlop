@@ -194,3 +194,38 @@ ul.cols, ul.examples { list-style: none; margin: 6px 0 8px; padding: 0 0 0 14px;
 ul.cols li { margin: 3px 0; }
 ul.examples { padding: 0; }
 ul.examples button { width: 100%; text-align: left; margin: 0 0 6px; white-space: normal; }
+
+/* Assistant panel */
+#agent { position: fixed; top: 48px; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 6;
+  display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); }
+#agent[hidden] { display: none; }
+@media (min-width: 1100px) { body.agent-open #view { margin-right: 440px; } }
+.agent-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.agent-head select { min-width: 0; max-width: 190px; }
+.agent-log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.agent-form { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); align-items: flex-end; }
+.agent-form textarea { flex: 1; resize: none; min-height: 40px; max-height: 160px; }
+textarea, select { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 10px; }
+textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.msg { line-height: 1.5; overflow-wrap: anywhere; }
+.msg.user { align-self: flex-end; max-width: 88%; padding: 8px 12px; border-radius: 12px 12px 2px 12px;
+  background: var(--accent); color: var(--accent-ink); white-space: pre-wrap; }
+.msg.pending, .msg.hint { color: var(--text-3); }
+.msg.error { color: var(--danger); }
+.msg > :first-child { margin-top: 0; } .msg > :last-child { margin-bottom: 0; }
+.msg p, .msg ul, .msg ol { margin: 8px 0; } .msg ul, .msg ol { padding-left: 20px; }
+.msg h3, .msg h4, .msg h5 { margin: 14px 0 6px; font-size: 14px; }
+.msg pre { padding: 10px 12px; background: var(--page); border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; white-space: pre; }
+.msg table { font-size: 13px; margin: 8px 0; } .msg th, .msg td { padding: 5px 8px; }
+.step { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px; background: var(--page); }
+.step summary { cursor: pointer; } .step pre { margin-top: 8px; border: 0; padding: 0; background: none; }
+.step.failed summary { color: var(--danger); }
+button.linklike { border: 0; background: none; padding: 0; color: var(--accent); text-align: left; white-space: normal; }
+.formgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 18px; margin: 10px 0; }
+.formgrid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.formgrid label[hidden] { display: none; }
+.formgrid label > span { font-size: 12px; color: var(--text-3); }
+.formgrid input, .formgrid select { width: 100%; box-sizing: border-box; }
+.formgrid .row { margin: 0; } .formgrid .row input { flex: 1; min-width: 0; }
+form.card h3 { font-size: 13px; margin: 18px 0 0; }

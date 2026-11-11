@@ -1,4 +1,5 @@
 // mlop web UI. No framework, no build step: this file is what the browser runs.
+import { initAgent, agentSettings } from "./agent.js";
 import { LineChart, drawHistogram, fmt, fmtStep, fmtDuration } from "./chart.js";
 
 const root = document.getElementById("view");
@@ -635,6 +636,7 @@ function runOverview(run, body) {
 async function viewSettings() {
   setCrumbs(["Settings"]);
   const [me, keys, stats] = await Promise.all([api("/api/me"), api("/api/keys"), api("/api/stats")]);
+  const assistant = await agentSettings(me);
   const fresh = h("div");
   const name = h("input", { type: "text", placeholder: "Key name, e.g. laptop", "aria-label": "Key name", maxlength: "64" });
   put(view, 
@@ -642,7 +644,7 @@ async function viewSettings() {
       me.auth ? h("button", { onclick: async () => { await api("/api/logout", { method: "POST" }); showLogin(); } }, "Sign out") : null),
     h("h2", { style: "margin-top:0" }, "Connect a training script"),
     h("div", { class: "card pad" }, h("pre", {},
-      `pip install git+https://github.com/yych42/mini-mlop.git\nexport MLOP_URL=${me.url}\n${me.auth ? "mlop login        # paste an API key once per machine\n" : ""}`)),
+      `pip install git+https://github.com/yych42/mini-mlop.git\nexport MLOP_URL=${me.url}\n${me.auth ? "mini-mlop login   # paste an API key once per machine\n" : ""}`)),
     h("h2", {}, "API keys"),
     me.auth ? null : h("p", { class: "error" }, "Authentication is disabled (--no-auth): anyone who can reach this server can read and write. Keys are not checked."),
     h("div", { class: "card tablewrap" }, h("table", {},
@@ -666,6 +668,7 @@ async function viewSettings() {
       name.value = "";
     } }, name, h("button", { class: "primary", type: "submit" }, "Create key")),
     fresh,
+    assistant,
     h("h2", {}, "Storage"),
     h("div", { class: "card pad" }, kv({
       projects: stats.projects, runs: stats.runs, database: bytes(stats.db_bytes),
@@ -765,5 +768,6 @@ async function route() {
   }
 }
 
+initAgent({ h, put, api, Unauthorized, onUnauthorized: () => showLogin() });
 window.addEventListener("hashchange", route);
 route();

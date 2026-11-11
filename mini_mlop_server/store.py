@@ -24,7 +24,7 @@ from contextlib import contextmanager
 
 from .query import QueryEngine
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(
@@ -125,6 +125,23 @@ CREATE TABLE IF NOT EXISTS alerts(
     body TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS alerts_by_run ON alerts(run_id, id);
+
+-- Server-side settings, including model-provider and sandbox credentials.
+-- Never readable through the query interface.
+CREATE TABLE IF NOT EXISTS settings(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- Conversations with the built-in agent.
+CREATE TABLE IF NOT EXISTS chats(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    messages TEXT NOT NULL DEFAULT '[]',
+    usage TEXT NOT NULL DEFAULT '{}'
+);
 """
 
 ACTIVE = "RUNNING"
@@ -289,6 +306,75 @@ class Store:
                 self._readers.get_nowait().close()
             except queue.Empty:
                 break
+
+    # -- settings and agent conversations ----------------------------------
+
+    def get_setting(self, key, default=None):
+        with self._read() as r:
+            row = r.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else default
+
+    def set_setting(self, key, value):
+        with self._write() as w:
+            w.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
+                (key, json.dumps(value)),
+            )
+
+    def add_usage(self, day, tokens):
+        """Adds to the day's model-token count and returns the new total."""
+        key = f"usage:{day}"
+        with self._write() as w:
+            row = w.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+            total = (json.loads(row[0]) if row else 0) + int(tokens)
+            w.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
+                (key, json.dumps(total)),
+            )
+        return total
+
+    def create_chat(self, title):
+        now = now_ms()
+        with self._write() as w:
+            cur = w.execute(
+                "INSERT INTO chats(title, created_at, updated_at) VALUES(?,?,?)",
+                (str(title)[:120] or "New conversation", now, now),
+            )
+            return cur.lastrowid
+
+    def get_chat(self, chat_id):
+        with self._read() as r:
+            row = r.execute(
+                "SELECT id, title, created_at, updated_at, messages, usage "
+                "FROM chats WHERE id=?",
+                (chat_id,),
+            ).fetchone()
+        if not row:
+            raise NotFound("no such conversation")
+        chat = dict(row)
+        chat["messages"] = json.loads(chat["messages"])
+        chat["usage"] = json.loads(chat["usage"])
+        return chat
+
+    def save_chat(self, chat_id, messages, usage):
+        with self._write() as w:
+            w.execute(
+                "UPDATE chats SET messages=?, usage=?, updated_at=? WHERE id=?",
+                (json.dumps(messages), json.dumps(usage), now_ms(), chat_id),
+            )
+
+    def list_chats(self, limit=50):
+        with self._read() as r:
+            rows = r.execute(
+                "SELECT id, title, created_at, updated_at FROM chats "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_chat(self, chat_id):
+        with self._write() as w:
+            w.execute("DELETE FROM chats WHERE id=?", (chat_id,))
 
     # -- api keys ---------------------------------------------------------
 

@@ -67,8 +67,11 @@ metrics, histograms, images and tables if you want something to look at first.
   Hugging Face Transformers integrations. Logging is queued and batched off your training thread.
 - **Query interface**: read-only SQL over all runs, metrics and logs, for coding agents, scripts
   and the built-in console (`mini-mlop query`, `POST /api/query`). See [docs/agents.md](docs/agents.md).
+- **Agent ready**: an MCP endpoint for outside agents, and a built-in assistant (the **Ask** panel)
+  that answers questions about your runs. Bring your own model key (OpenRouter first; OpenAI- and
+  Anthropic-format providers supported) and, optionally, a sandbox for analysis code.
 - **Server** (`mini_mlop_server`): ingest API, SQLite storage, API-key auth, stalled-run detection, and
-  the web UI, in about 2,200 lines of standard-library Python.
+  the web UI, in standard-library Python with no dependencies.
 - **Web UI**: project and run lists, live charts with smoothing and log scale, run comparison,
   histogram/table/media browsers with a step slider, console logs, run config and machine details,
   stop and delete, API-key management. No build step; ~20 KB over the wire.

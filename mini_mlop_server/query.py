@@ -190,7 +190,7 @@ _SQLITE_READ = 20
 _SQLITE_SELECT = 21
 _SQLITE_FUNCTION = 31
 _SQLITE_RECURSIVE = 33
-_HIDDEN_TABLES = {"api_keys"}
+_HIDDEN_TABLES = {"api_keys", "settings", "chats"}
 _BLOCKED_FUNCTIONS = {"load_extension", "zeroblob", "randomblob"}
 
 
