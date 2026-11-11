@@ -65,8 +65,10 @@ metrics, histograms, images and tables if you want something to look at first.
 - **Logger** (`mini_mlop`): scalars, histograms, tables, images, audio, video, text and file artifacts;
   console capture; system and NVIDIA GPU metrics; git state; PyTorch `watch()`, Lightning and
   Hugging Face Transformers integrations. Logging is queued and batched off your training thread.
+- **Query interface**: read-only SQL over all runs, metrics and logs, for coding agents, scripts
+  and the built-in console (`mini-mlop query`, `POST /api/query`). See [docs/agents.md](docs/agents.md).
 - **Server** (`mini_mlop_server`): ingest API, SQLite storage, API-key auth, stalled-run detection, and
-  the web UI, in under 2,000 lines of standard-library Python.
+  the web UI, in about 2,200 lines of standard-library Python.
 - **Web UI**: project and run lists, live charts with smoothing and log scale, run comparison,
   histogram/table/media browsers with a step slider, console logs, run config and machine details,
   stop and delete, API-key management. No build step; ~20 KB over the wire.

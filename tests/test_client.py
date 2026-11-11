@@ -220,3 +220,29 @@ def test_version_mismatch_with_server_is_warned(server, tmp_path, monkeypatch, c
         ok, _ = auth._check(mlop.sets.setup({"url": server.url}), server.key)
     assert ok
     assert "client is version 9.9.0 but the server is" in caplog.text
+
+
+def test_query_command(server, tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    run = mlop.init(
+        dir=str(tmp_path), project="cli", name="one",
+        settings={"url": server.url, "_auth": server.key},
+    )
+    run.log({"loss": 0.5})
+    run.finish()
+
+    def cli(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "mini_mlop", "query", "--url", server.url, *args],
+            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+            env={**os.environ, "MLOP_API_KEY": server.key},
+        )
+
+    assert "metrics" in cli().stdout and "Examples:" in cli("--schema").stdout
+    assert cli("SELECT project, name FROM runs", "--format", "csv").stdout == "project,name\ncli,one\n"
+    assert "cli      one" in cli("SELECT project, name FROM runs").stdout
+    refused = cli("DELETE FROM runs")
+    assert refused.returncode != 0 and refused.stderr.startswith("mini-mlop: ")

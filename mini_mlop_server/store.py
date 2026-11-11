@@ -22,6 +22,8 @@ import threading
 import time
 from contextlib import contextmanager
 
+from .query import QueryEngine
+
 SCHEMA_VERSION = 1
 
 SCHEMA = """
@@ -231,6 +233,8 @@ class Store:
             c.row_factory = sqlite3.Row
             self._readers.put(c)
 
+        self.sql = QueryEngine(self.path)  # opens its connection on first use
+
         self._series = {}  # (run_id, name) -> series id
         self._runs = set()  # run ids known to exist
         self._beats = {}  # run id -> last heartbeat written (ms)
@@ -273,6 +277,7 @@ class Store:
             self._readers.put(c)
 
     def close(self):
+        self.sql.close()
         with self._lock:
             try:
                 self._w.execute("PRAGMA wal_checkpoint(TRUNCATE)")

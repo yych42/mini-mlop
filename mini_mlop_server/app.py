@@ -5,8 +5,10 @@ nothing to install. One thread per connection; all persistence goes through
 `Store`.
 """
 
+import csv
 import gzip
 import hashlib
+import io
 import json
 import mimetypes
 import os
@@ -19,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import __version__
+from .query import QueryError, describe as describe_query
 from .store import Invalid, NotFound, Store
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -691,6 +694,47 @@ def keys_delete(h, key_id):
 @route("GET", "/api/stats")
 def stats(h):
     h.send_json(h.store.stats())
+
+
+# -- open-ended read access: SQL -------------------------------------------
+
+
+def _run_query(h, sql, params, limit, fmt):
+    try:
+        result = h.store.sql.run(sql, params, limit)
+    except QueryError as e:
+        raise HTTPError(400, str(e))
+    if fmt == "csv":
+        out = io.StringIO()
+        w = csv.writer(out, lineterminator="\n")
+        w.writerow(result["columns"])
+        w.writerows(result["rows"])
+        headers = [("X-Truncated", "1")] if result["truncated"] else []
+        return h.send_body(200, out.getvalue().encode(), "text/csv; charset=utf-8", headers)
+    if fmt not in (None, "json"):
+        raise HTTPError(400, "format must be json or csv")
+    h.send_json(result)
+
+
+@route("GET", "/api/query/schema")
+def query_schema(h):
+    h.send_json(describe_query())
+
+
+@route("GET", "/api/query")
+def query_get(h):
+    if h.arg("sql") is None:
+        return h.send_json(describe_query())
+    _run_query(h, h.arg("sql"), None, h.arg("limit"), h.arg("format"))
+
+
+@route("POST", "/api/query")
+def query_post(h):
+    body = h.read_json()
+    _run_query(
+        h, body.get("sql"), body.get("params"), body.get("limit"),
+        body.get("format") or h.arg("format"),
+    )
 
 
 # -- server ----------------------------------------------------------------

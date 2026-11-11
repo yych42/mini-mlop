@@ -673,6 +673,68 @@ async function viewSettings() {
     })));
 }
 
+// -- SQL console: the same open-ended interface agents use ---------------------
+let lastSql = "";
+
+async function viewQuery() {
+  setCrumbs(["Query"]);
+  const schema = await api("/api/query/schema");
+  const input = h("textarea", { class: "sql mono", rows: 7, spellcheck: "false", "aria-label": "SQL query",
+    placeholder: "SELECT id, project, name, status FROM runs ORDER BY id DESC" });
+  input.value = lastSql || schema.examples[0].sql;
+  const status = h("span", { class: "muted" });
+  const out = h("div");
+  const runButton = h("button", { class: "primary", type: "submit" }, "Run");
+
+  async function run() {
+    lastSql = input.value;
+    runButton.disabled = true;
+    status.textContent = "Running…";
+    try {
+      const r = await api("/api/query", { method: "POST", body: { sql: input.value, limit: 1000 } });
+      status.textContent = `${r.row_count} row${r.row_count === 1 ? "" : "s"}` +
+        (r.truncated ? " (truncated; add LIMIT or aggregate)" : "") + ` · ${r.elapsed_ms} ms`;
+      put(out, r.rows.length
+        ? h("div", { class: "card tablewrap results" }, h("table", {},
+            h("thead", {}, h("tr", {}, r.columns.map((c) => h("th", {}, c)))),
+            h("tbody", {}, r.rows.map((row) => h("tr", {}, row.map((v) =>
+              h("td", { class: typeof v === "number" ? "num mono" : "mono" }, v === null ? h("span", { class: "muted" }, "null") : String(v))))))))
+        : h("p", { class: "muted" }, "No rows."));
+    } catch (e) {
+      if (e instanceof Unauthorized) return showLogin();
+      status.textContent = "";
+      put(out, h("div", { class: "error" }, e.message));
+    } finally {
+      runButton.disabled = false;
+    }
+  }
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); run(); }
+  });
+  put(view,
+    h("div", { class: "head" }, h("h1", {}, "Query")),
+    h("p", { class: "muted" }, "Read-only SQL over everything this server stores. Agents and scripts use the same interface at ",
+      h("code", {}, "POST /api/query"), "; ", h("code", {}, "GET /api/query/schema"), " describes it."),
+    h("div", { class: "querygrid" },
+      h("div", {},
+        h("form", { onsubmit: (e) => { e.preventDefault(); run(); } },
+          input,
+          h("div", { class: "queryrow" }, runButton, h("span", { class: "muted" }, "Ctrl/⌘ + Enter"), h("span", { class: "grow" }), status)),
+        out),
+      h("aside", {},
+        h("h2", {}, "Tables"),
+        schema.tables.map((t) => h("details", {},
+          h("summary", {}, h("code", {}, t.name), " ", h("span", { class: "muted" }, t.description)),
+          h("ul", { class: "cols" }, t.columns.map(([name, type, note]) =>
+            h("li", {}, h("code", {}, name), " ", h("span", { class: "muted" }, type.toLowerCase() + (note ? ` · ${note}` : ""))))))),
+        h("h2", {}, "Examples"),
+        h("ul", { class: "examples" }, schema.examples.map((ex) =>
+          h("li", {}, h("button", { type: "button", onclick: () => { input.value = ex.sql; input.focus(); } }, ex.question)))),
+        h("h2", {}, "Notes"),
+        h("ul", { class: "cols" }, schema.notes.map((n) => h("li", { class: "muted" }, n))))));
+}
+
 // -- router ------------------------------------------------------------------
 async function route() {
   const mine = ++generation;
@@ -691,6 +753,7 @@ async function route() {
     if (parts[0] === "projects" && parts[1]) await viewProject(parts[1]);
     else if (parts[0] === "runs" && /^\d+$/.test(parts[1] || "")) await viewRun(+parts[1], parts[2]);
     else if (parts[0] === "settings") await viewSettings();
+    else if (parts[0] === "query") await viewQuery();
     else await viewProjects();
   } catch (e) {
     attach.disconnect();

@@ -176,3 +176,21 @@ td.clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-spa
 .keybox { font-family: var(--mono); padding: 10px 12px; background: var(--page);
           border-radius: 8px; word-break: break-all; user-select: all; margin: 10px 0; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* SQL console */
+.querygrid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 24px; align-items: start; }
+@media (max-width: 900px) { .querygrid { grid-template-columns: minmax(0, 1fr); } }
+textarea.sql { width: 100%; box-sizing: border-box; resize: vertical; padding: 10px 12px; line-height: 1.5;
+  color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+textarea.sql:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.queryrow { display: flex; align-items: center; gap: 12px; margin: 10px 0 16px; }
+.results { max-height: 60vh; overflow: auto; }
+.results td { white-space: pre-wrap; word-break: break-word; max-width: 480px; }
+.querygrid aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); margin: 18px 0 8px; }
+.querygrid aside h2:first-child { margin-top: 0; }
+.querygrid details { margin: 4px 0; }
+.querygrid summary { cursor: pointer; }
+ul.cols, ul.examples { list-style: none; margin: 6px 0 8px; padding: 0 0 0 14px; }
+ul.cols li { margin: 3px 0; }
+ul.examples { padding: 0; }
+ul.examples button { width: 100%; text-align: left; margin: 0 0 6px; white-space: normal; }
