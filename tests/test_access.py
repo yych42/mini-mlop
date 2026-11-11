@@ -212,6 +212,54 @@ def test_cli_creates_scoped_keys(tmp_path):
     assert "write  alpha" in listing and "read   all projects" in listing
 
 
+def test_rotating_a_key_replaces_its_secret(team):
+    admin, old = team["admin"], team["alpha_write"]
+    key_id = next(k["id"] for k in admin.get("/api/keys")[1]["keys"] if k["project"] == "alpha"
+                  and k["access"] == "write")
+    status, made = admin.post(f"/api/keys/{key_id}/rotate")
+    assert status == 200 and made["id"] == key_id and not made["current"]
+    assert (made["name"], made["access"], made["project"]) == ("k", "write", "alpha")
+    assert made["key"] != old.key
+    assert old.get("/api/me")[0] == 401, "the old secret stops working"
+    assert Api(old.url, made["key"]).get("/api/me")[1]["project"] == "alpha"
+    assert admin.post("/api/keys/9999/rotate")[0] == 404
+    assert team["writer"].post(f"/api/keys/{key_id}/rotate")[0] == 403, "admins only"
+
+
+def test_rotating_the_signed_in_key_moves_the_session(server):
+    anon = Api(server.url)
+    _, _, headers = anon.request("POST", "/api/login", {"key": server.key}, raw=True)
+    session = {"Cookie": headers["Set-Cookie"].split(";")[0]}
+    me = anon.get("/api/keys", headers=session)[1]
+    status, data, headers = anon.request(
+        "POST", f"/api/keys/{me['current']}/rotate", {}, headers=session, raw=True
+    )
+    made = json.loads(data)
+    assert status == 200 and made["current"] and made["access"] == "admin"
+    assert anon.get("/api/me", headers=session)[0] == 401, "old cookie is dead"
+    fresh = {"Cookie": headers["Set-Cookie"].split(";")[0]}
+    assert anon.get("/api/me", headers=fresh)[0] == 200, "new cookie works"
+
+
+def test_cli_rotates_keys(tmp_path):
+    def cli(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "mini_mlop_server", "--data", str(tmp_path), "keys", *args],
+            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+        )
+
+    first = cli("create", "seed").stdout.strip()
+    rotated = cli("rotate", "1")
+    new = rotated.stdout.strip()
+    assert new.startswith("mini_mlop_") and new != first and "rotated" in rotated.stderr
+    store = Store(str(tmp_path), readers=1)
+    try:
+        assert store.check_key(first) is None and store.check_key(new)["name"] == "seed"
+    finally:
+        store.close()
+    assert cli("rotate", "42").returncode != 0
+
+
 def test_existing_keys_become_admins(tmp_path):
     data = tmp_path / "old"
     store = Store(str(data))

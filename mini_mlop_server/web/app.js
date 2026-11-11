@@ -640,6 +640,8 @@ function runOverview(run, body) {
       h("div", { class: "logs", style: "margin-top:8px" }, h("pre", {}, sys.requirements.slice().sort().join("\n")))) : null);
 }
 
+let revealed = null;  // the secret of a key just created or rotated
+
 async function viewSettings() {
   setCrumbs(["Settings"]);
   session = null;
@@ -660,7 +662,18 @@ async function viewSettings() {
   }
   const [keys, stats, projects] = await Promise.all([api("/api/keys"), api("/api/stats"), api("/api/projects")]);
   const assistant = await agentSettings(me);
-  const fresh = h("div");
+  // A key just created or rotated: shown once, above the list, then forgotten.
+  const fresh = h("div"), failed = h("div");
+  if (revealed) {
+    const k = revealed;
+    revealed = null;
+    put(fresh, h("div", { class: "card pad", style: "margin-bottom:12px" },
+      h("b", {}, `Key "${k.name}" ${k.rotated ? "rotated" : "created"}`),
+      ` (${k.access}, ${k.project || "all projects"}). Copy it now; it is not shown again.`,
+      k.rotated ? " The old secret no longer works: update every script and machine that used it." : null,
+      k.current ? " This browser is now signed in with the new secret." : null,
+      h("div", { class: "keybox" }, k.key)));
+  }
   const name = h("input", { type: "text", placeholder: "Key name, e.g. laptop", "aria-label": "Key name", maxlength: "64" });
   const access = h("select", { "aria-label": "Access" },
     h("option", { value: "admin" }, "Admin: everything"),
@@ -677,6 +690,7 @@ async function viewSettings() {
     head,
     h("h2", {}, "API keys"),
     me.auth ? null : h("p", { class: "error" }, "Authentication is disabled (--no-auth): anyone who can reach this server can read and write. Keys are not checked."),
+    fresh,
     h("div", { class: "card tablewrap" }, h("table", {},
       h("thead", {}, h("tr", {}, h("th", {}, "Name"), h("th", {}, "Key"), h("th", {}, "Access"), h("th", {}, "Project"), h("th", {}, "Created"), h("th", {}, "Last used"), h("th", {}))),
       h("tbody", {}, keys.keys.map((k) => h("tr", {},
@@ -686,27 +700,33 @@ async function viewSettings() {
         h("td", { class: k.project ? "" : "muted" }, k.project || "all"),
         h("td", { class: "muted" }, new Date(k.created_at).toLocaleDateString()),
         h("td", { class: "muted" }, k.last_used_at ? ago(k.last_used_at) : "never"),
-        h("td", {}, k.id === keys.current ? null : h("button", { class: "danger", onclick: async () => {
-          if (!confirm(`Revoke key "${k.name}"? Scripts using it will stop being able to log.`)) return;
-          await api(`/api/keys/${k.id}`, { method: "DELETE" });
-          route();
-        } }, "Revoke"))))))),
+        h("td", { class: "actions" },
+          h("button", { onclick: async () => {
+            const own = k.id === keys.current ? " This browser will switch to the new secret." : "";
+            if (!confirm(`Rotate key "${k.name}"? It gets a new secret and the old one stops working at once; ` +
+              `scripts and machines using it must be given the new one.${own}`)) return;
+            revealed = { ...(await api(`/api/keys/${k.id}/rotate`, { method: "POST" })), rotated: true };
+            route();
+          } }, "Rotate"),
+          k.id === keys.current ? null : h("button", { class: "danger", onclick: async () => {
+            if (!confirm(`Revoke key "${k.name}"? Scripts using it will stop being able to log.`)) return;
+            await api(`/api/keys/${k.id}`, { method: "DELETE" });
+            route();
+          } }, "Revoke"))))))),
     h("form", { class: "row", style: "margin-top:12px", onsubmit: async (e) => {
       e.preventDefault();
       try {
-        const k = await api("/api/keys", { method: "POST", body: { name: name.value.trim() || "unnamed", access: access.value, project: scope.value.trim() } });
-        put(fresh, h("div", { class: "card pad", style: "margin-top:12px" },
-          h("b", {}, `Key "${k.name}" created`), ` (${k.access}, ${k.project || "all projects"}). Copy it now; it is not shown again.`,
-          h("div", { class: "keybox" }, k.key)));
-        name.value = "";
+        revealed = await api("/api/keys", { method: "POST", body: { name: name.value.trim() || "unnamed", access: access.value, project: scope.value.trim() } });
+        route();
       } catch (ex) {
-        put(fresh, h("p", { class: "error" }, ex.message));
+        put(failed, h("p", { class: "error" }, ex.message));
       }
     } }, name, scope, h("datalist", { id: "key-projects" }, projects.projects.map((p) => h("option", { value: p.name }))),
       access, h("button", { class: "primary", type: "submit" }, "Create key")),
     h("p", { class: "muted" }, "Name a project to limit a key to it: the key can then log to, read and ask about that project only. " +
-      "Give teammates and training jobs their own keys, and agents a read key."),
-    fresh,
+      "Give teammates and training jobs their own keys, and agents a read key. " +
+      "Rotate a key to replace its secret, for example the first key, whose secret was printed in the server log."),
+    failed,
     assistant,
     h("h2", {}, "Storage"),
     h("div", { class: "card pad" }, kv({

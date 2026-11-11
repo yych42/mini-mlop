@@ -486,9 +486,13 @@ def login(h):
     if h.server.config.auth and not h.store.check_key(key):
         time.sleep(0.5)
         raise HTTPError(401, "invalid API key")
+    h.send_json({"ok": True}, headers=[_session_cookie(h, key)])
+
+
+def _session_cookie(h, key):
     secure = "; Secure" if h.base_url().startswith("https://") else ""
     cookie = f"{COOKIE}={quote(key)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000"
-    h.send_json({"ok": True}, headers=[("Set-Cookie", cookie + secure)])
+    return ("Set-Cookie", cookie + secure)
 
 
 @route("POST", "/api/logout", auth=False)
@@ -756,6 +760,18 @@ def keys_delete(h, key_id):
         raise HTTPError(400, "refusing to revoke the key you are signed in with")
     h.store.delete_key(key_id)
     h.send_json({"ok": True})
+
+
+@route("POST", "/api/keys/<key_id>/rotate", need="admin")
+def keys_rotate(h, key_id):
+    made = h.store.rotate_key(_int_path(key_id))
+    # Rotating the key this browser signed in with: move the session to the
+    # new secret so the page keeps working.
+    current = h.key and h.key["id"] == made["id"]
+    h.send_json(
+        {**made, "current": bool(current)},
+        headers=[_session_cookie(h, made["key"])] if current else (),
+    )
 
 
 @route("GET", "/api/stats", need="admin")

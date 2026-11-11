@@ -8,7 +8,7 @@ import time
 
 from . import __version__
 from .app import Config, make_server
-from .store import Invalid, Store
+from .store import Invalid, NotFound, Store
 
 DEFAULT_DATA = os.path.join("~", ".mini-mlop", "server")
 
@@ -93,6 +93,10 @@ def build_parser():
         help="read: view and query; write: also log, stop and delete runs; admin: "
         "everything (default: write with --project, otherwise admin)",
     )
+    ko = ksub.add_parser(
+        "rotate", help="give a key a new secret (same name and access) and print it once"
+    )
+    ko.add_argument("id", type=int)
     kr = ksub.add_parser("revoke", help="revoke a key by id")
     kr.add_argument("id", type=int)
     return p
@@ -126,6 +130,17 @@ def keys_command(args):
             print(
                 f"key {k['id']} ({k['name']}: {k['access']}, {scope}) created; "
                 "it is not shown again",
+                file=sys.stderr,
+            )
+        elif args.action == "rotate":
+            try:
+                k = store.rotate_key(args.id)
+            except NotFound as e:
+                sys.exit(f"mini-mlop-server: {e}")
+            print(k["key"])
+            print(
+                f"key {k['id']} ({k['name']}) rotated; the old secret no longer works "
+                "and the new one is not shown again",
                 file=sys.stderr,
             )
         elif args.action == "revoke":

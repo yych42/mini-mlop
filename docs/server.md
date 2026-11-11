@@ -36,12 +36,22 @@ mini-mlop-server keys list
 ```
 
 ```bash
+mini-mlop-server keys rotate 1
+```
+
+```bash
 mini-mlop-server keys revoke 2
 ```
 
 These work whether or not the server is running (pass the same `--data` if you changed it), so a
-lost key is never a lock-out. Keys can also be created and revoked from **Settings** in the web
-UI. Only a SHA-256 hash of each key is stored.
+lost key is never a lock-out. Keys can also be created, rotated and revoked from **Settings** in
+the web UI. Only a SHA-256 hash of each key is stored, so a key's secret is shown once, when it is
+created or rotated, and never again.
+
+Rotating gives a key a new secret and keeps its name, access and project; the old secret stops
+working at once. Rotate the first key after setting up a server whose logs others can read (a
+hosted platform, a shared journal): its secret was printed there. Rotating the key you are signed
+in with in the web UI moves your browser to the new secret.
 
 The same key signs you in to the web UI. There are no user accounts; a key is the identity. Give
 each person, training job and agent its own, so one can be revoked without disturbing the others.
@@ -156,6 +166,13 @@ before the first deploy (see [Secrets](#secrets)). Fly terminates HTTPS, and run
 the public address from its forwarded headers. For a full shutdown instead of suspend, set
 `auto_stop_machines = "stop"`: it costs nothing but disk while stopped, and starts in a second or
 two. The volume is billed whether the machine runs or not.
+
+Lost every admin key? Make a new one on the machine. Run it as the `mini-mlop` user, so the
+database files stay writable by the server:
+
+```bash
+fly ssh console -C "su-exec mini-mlop python -m mini_mlop_server keys create rescue"
+```
 
 ## HTTPS and exposure
 
