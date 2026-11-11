@@ -211,3 +211,4 @@ def test_settings_resolve_server_address(monkeypatch):
     )
     monkeypatch.setenv("MLOP_URL", "http://tracker:1234")
     assert Settings().url_base() == "http://tracker:1234"
+    assert setup({"host": "pi.local"}).url_base() == "http://pi.local:2718"  # explicit wins

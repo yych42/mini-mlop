@@ -1,0 +1,19 @@
+mini-mlop
+Copyright the mini-mlop contributors
+
+This project is a fork of mlop (https://github.com/mlop-ai/mlop),
+Copyright the mlop authors (jqssun, lakeesiv), licensed under the Apache
+License, Version 2.0.
+
+Changes made in this fork, relative to mlop at commit 57d49ac:
+
+  - The server, previously a set of separate repositories (mlop-ai/server,
+    web, ingest, py) run with ClickHouse, PostgreSQL, MinIO and Traefik, was
+    replaced by a single standard-library Python package in this repository
+    (mlop_server) that stores data in SQLite and on the local filesystem,
+    with a new web UI.
+  - The Python client (mlop) was changed to talk to that single server,
+    to store API keys in a local file instead of the system keyring, and to
+    treat numpy, pillow, soundfile and the NVIDIA bindings as optional.
+
+The logo in design/ and mlop_server/web/favicon.svg comes from mlop.

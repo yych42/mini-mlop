@@ -1,16 +1,17 @@
 .DS_Store
 ._*
 __pycache__
+.pytest_cache/
 dist/
 build/
 *.egg-info/
-.venv/*
+.venv/
 
 *.log
 *.db
-.*db
+*.db-wal
+*.db-shm
 .env
 
+# run directories the client writes next to your script
 .mlop
-.obsidian
-scripts/.*

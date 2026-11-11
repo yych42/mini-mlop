@@ -1,0 +1,30 @@
+# systemd unit for running the mlop server on a Raspberry Pi or any Linux box.
+#
+#   sudo useradd --system --create-home --home-dir /var/lib/mlop mlop
+#   sudo -u mlop python3 -m venv /var/lib/mlop/venv
+#   sudo -u mlop /var/lib/mlop/venv/bin/pip install git+https://github.com/yych42/mini-mlop.git
+#   sudo cp deploy/mlop-server.service /etc/systemd/system/
+#   sudo systemctl enable --now mlop-server
+#   journalctl -u mlop-server | grep key        # the API key, printed on first start
+
+[Unit]
+Description=mlop experiment tracking server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mlop
+Environment=MLOP_DATA_DIR=/var/lib/mlop/data
+ExecStart=/var/lib/mlop/venv/bin/mlop-server
+Restart=on-failure
+RestartSec=3
+
+# The server only needs its data directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/mlop
+
+[Install]
+WantedBy=multi-user.target
