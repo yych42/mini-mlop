@@ -1,0 +1,75 @@
+# Deploys the server to Fly.io with fly.toml, after the tests pass on main.
+#
+# One-time setup (see "Fly.io" in docs/server.md):
+#   1. Create an org token:  fly tokens create org   (or in the Fly dashboard:
+#      Tokens -> Create token, type "Org")
+#   2. In GitHub: Settings -> Secrets and variables -> Actions
+#        secret    FLY_API_TOKEN = that token
+#        variable  FLY_APP       = a unique app name (default: the `app` in fly.toml)
+#        variable  FLY_ORG       = your Fly organisation slug (default: personal)
+# The first run creates the app and its data volume; later runs only deploy.
+name: deploy
+
+on:
+  workflow_run:
+    workflows: [test]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Only after a green test run of a push to main (or when started by hand).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ vars.FLY_APP }}
+      FLY_ORG: ${{ vars.FLY_ORG || 'personal' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The commit the tests passed on, not whatever main is now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Check settings
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::Add the FLY_API_TOKEN secret (see the top of this workflow)."
+            exit 1
+          fi
+          app="${FLY_APP:-$(sed -n 's/^app *= *"\([^"]*\)".*/\1/p' fly.toml)}"
+          region="$(sed -n 's/^primary_region *= *"\([^"]*\)".*/\1/p' fly.toml)"
+          echo "APP=$app" >> "$GITHUB_ENV"
+          echo "REGION=$region" >> "$GITHUB_ENV"
+          echo "Deploying app $app in region $region"
+
+      - name: Create the app and its volume (first run only)
+        run: |
+          if ! flyctl apps list --json | grep -qiE "\"name\": *\"$APP\""; then
+            flyctl apps create "$APP" --org "$FLY_ORG"
+          fi
+          if ! flyctl volumes list --app "$APP" --json | grep -qiE '"name": *"mini_mlop_data"'; then
+            flyctl volumes create mini_mlop_data --app "$APP" --region "$REGION" --size 1 --yes
+          fi
+
+      - name: Deploy
+        run: flyctl deploy --app "$APP" --remote-only --ha=false
+
+      - name: Where it is
+        run: |
+          echo "Server: https://$APP.fly.dev"
+          echo "First deploy? The admin API key is in the logs: flyctl logs --app $APP"
+          echo "Sign in with it, then rotate it under Settings -> API keys."

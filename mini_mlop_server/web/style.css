@@ -229,3 +229,5 @@ button.linklike { border: 0; background: none; padding: 0; color: var(--accent);
 .formgrid input, .formgrid select { width: 100%; box-sizing: border-box; }
 .formgrid .row { margin: 0; } .formgrid .row input { flex: 1; min-width: 0; }
 form.card h3 { font-size: 13px; margin: 18px 0 0; }
+td.actions { white-space: nowrap; text-align: right; }
+td.actions button + button { margin-left: 6px; }

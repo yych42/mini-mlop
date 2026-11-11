@@ -427,6 +427,24 @@ class Store:
             "access": access, "project": project,
         }
 
+    def rotate_key(self, key_id):
+        """Give a key a new secret, keeping its id, name, access and project.
+        The old secret stops working at once."""
+        key = KEY_PREFIX + secrets.token_urlsafe(24)
+        with self._write() as w:
+            if not w.execute(
+                "UPDATE api_keys SET hash=?, hint=?, last_used_at=NULL WHERE id=?",
+                (hash_key(key), key[:14] + "…" + key[-4:], key_id),
+            ).rowcount:
+                raise NotFound("key not found")
+            row = w.execute(
+                "SELECT name, access, project FROM api_keys WHERE id=?", (key_id,)
+            ).fetchone()
+        return {
+            "id": key_id, "name": row[0], "key": key,
+            "access": row[1], "project": row[2],
+        }
+
     def run_project(self, run_id):
         """The name of the project a run belongs to."""
         name = self._run_projects.get(run_id)

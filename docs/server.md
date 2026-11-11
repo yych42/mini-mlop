@@ -36,12 +36,22 @@ mini-mlop-server keys list
 ```
 
 ```bash
+mini-mlop-server keys rotate 1
+```
+
+```bash
 mini-mlop-server keys revoke 2
 ```
 
 These work whether or not the server is running (pass the same `--data` if you changed it), so a
-lost key is never a lock-out. Keys can also be created and revoked from **Settings** in the web
-UI. Only a SHA-256 hash of each key is stored.
+lost key is never a lock-out. Keys can also be created, rotated and revoked from **Settings** in
+the web UI. Only a SHA-256 hash of each key is stored, so a key's secret is shown once, when it is
+created or rotated, and never again.
+
+Rotating gives a key a new secret and keeps its name, access and project; the old secret stops
+working at once. Rotate the first key after setting up a server whose logs others can read (a
+hosted platform, a shared journal): its secret was printed there. Rotating the key you are signed
+in with in the web UI moves your browser to the new secret.
 
 The same key signs you in to the web UI. There are no user accounts; a key is the identity. Give
 each person, training job and agent its own, so one can be revoked without disturbing the others.
@@ -130,32 +140,41 @@ available where this was written — so treat it as a starting point.)
 Fly machine (shared CPU, 256 MB) with a 1 GB volume for the data. When nothing has talked to the
 server for a few minutes, Fly suspends the machine, and the next request (the web UI, `mini-mlop`
 or a training job's logger) wakes it in well under a second. While a run is logging, its
-heartbeats keep the machine awake. From the repository root, with
-[`flyctl`](https://fly.io/docs/flyctl/install/) installed and `fly auth login` done:
+heartbeats keep the machine awake.
+
+Deploy with GitHub Actions: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)
+deploys every push to `main` once the tests pass, and can be started by hand from the Actions tab.
+One-time setup:
+
+1. Create a Fly org token: `fly tokens create org`, or in the Fly dashboard under **Tokens**. An
+   org token (not a deploy token) is needed so the first run can create the app and volume.
+2. In the GitHub repository, **Settings → Secrets and variables → Actions**: add the secret
+   `FLY_API_TOKEN`, and the variable `FLY_APP` with an app name nobody on Fly has taken (otherwise
+   the `app` in `fly.toml` is used). If your Fly organisation is not your personal one, add the
+   variable `FLY_ORG` with its slug.
+3. Run the workflow. The first run creates the app and the `mini_mlop_data` volume in
+   `primary_region`, then deploys. Later runs only deploy.
+
+The server is then at `https://<app>.fly.dev`. On the first start it prints an admin key to the
+Fly logs (`fly logs --app <app>`, or **Logs** in the dashboard): sign in with it, then **Rotate**
+it under Settings → API keys, since log output is kept by Fly.
+
+Deploying from a laptop works too, from the repository root: `fly deploy --app <app> --ha=false`.
+Avoid Fly's website "launch from GitHub" flow: it generates its own configuration instead of
+reading `fly.toml`.
+
+Fly terminates HTTPS, and run links pick up the public address from its forwarded headers.
+Optionally `fly secrets set MINI_MLOP_SECRET_KEY=... --app <app>` before the first deploy (see
+[Secrets](#secrets)). For a full shutdown instead of suspend, set `auto_stop_machines = "stop"`:
+it costs nothing but disk while stopped, and starts in a second or two. The volume is billed
+whether the machine runs or not.
+
+Lost every admin key? Make a new one on the machine. Run it as the `mini-mlop` user, so the
+database files stay writable by the server:
 
 ```bash
-fly launch --copy-config --no-deploy
+fly ssh console -C "su-exec mini-mlop python -m mini_mlop_server keys create rescue"
 ```
-
-```bash
-fly volumes create mini_mlop_data --size 1 --region iad
-```
-
-```bash
-fly deploy
-```
-
-```bash
-fly logs
-```
-
-`fly launch` asks for an app name (write the one you pick into `fly.toml`); create the volume in
-the same region as `primary_region`. `fly logs` shows the API key printed on first start, and the
-server is at `https://<app>.fly.dev`. Optionally set `fly secrets set MINI_MLOP_SECRET_KEY=...`
-before the first deploy (see [Secrets](#secrets)). Fly terminates HTTPS, and run links pick up
-the public address from its forwarded headers. For a full shutdown instead of suspend, set
-`auto_stop_machines = "stop"`: it costs nothing but disk while stopped, and starts in a second or
-two. The volume is billed whether the machine runs or not.
 
 ## HTTPS and exposure
 
