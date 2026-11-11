@@ -60,6 +60,13 @@ pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700;
          color: var(--text); font-size: 15px; }
 .brand:hover { text-decoration: none; }
+/* Monospace so the title keeps its width while loading.js scrambles it. */
+#brand-word { font-family: var(--mono); font-size: 14px; font-weight: 600; letter-spacing: -.01em; white-space: pre; }
+#brand-word .g { color: var(--text-3); font-weight: 500; }
+/* The page being left fades while the next one loads. */
+#view[aria-busy=true] > * { opacity: .5; pointer-events: none; transition: opacity .15s .15s; }
+/* A button whose action is running. */
+button[aria-busy=true] { cursor: progress; opacity: .6; }
 #crumbs { display: flex; gap: 8px; align-items: center; min-width: 0;
           color: var(--text-3); white-space: nowrap; overflow: hidden; }
 #crumbs a { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; }

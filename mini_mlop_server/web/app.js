@@ -1,6 +1,7 @@
 // mini-mlop web UI. No framework, no build step: this file is what the browser runs.
 import { initAgent, agentSettings } from "./agent.js";
 import { LineChart, drawHistogram, fmt, fmtStep, fmtDuration } from "./chart.js";
+import * as loading from "./loading.js";
 
 const root = document.getElementById("view");
 let view = root;  // each navigation renders into its own mount, attached when ready
@@ -14,7 +15,8 @@ function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
-    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    if (k === "onclick" || k === "onsubmit") el.addEventListener(k.slice(2), busyWhileRunning(v));
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else if (k === "class") el.className = v;
     else if (k === "style") el.style.cssText = v;
     else if (k in el && typeof v !== "string") el[k] = v;
@@ -25,6 +27,24 @@ function h(tag, attrs, ...kids) {
     el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
   }
   return el;
+}
+
+// A click or submit handler that returns a promise is an action that talks to
+// the server: its button is disabled and the title shows the loading sweep
+// until it settles.
+function busyWhileRunning(fn) {
+  return (e) => {
+    const result = fn(e);
+    if (!result || typeof result.then !== "function") return result;
+    const button = e.type === "submit" ? e.submitter : e.currentTarget;
+    const isButton = button instanceof HTMLButtonElement;
+    if (isButton) { button.disabled = true; button.setAttribute("aria-busy", "true"); }
+    loading.begin();
+    return result.finally(() => {
+      loading.end();
+      if (isButton) { button.disabled = false; button.removeAttribute("aria-busy"); }
+    });
+  };
 }
 
 // replaceChildren, minus the footgun of null turning into the text "null"
@@ -194,6 +214,7 @@ async function showLogin(message) {
   setCrumbs();
   view = h("div");
   put(root, view);
+  root.removeAttribute("aria-busy");
   const key = h("input", { type: "password", placeholder: "mini_mlop_…", autocomplete: "current-password",
     "aria-label": "API key", required: true });
   const err = h("div", { class: "error" }, message || "");
@@ -804,11 +825,13 @@ async function route() {
   document.getElementById("tooltip").hidden = true;
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
   const mount = (view = h("div"));
-  // Attach as soon as the view has drawn something, unless the user has
-  // already navigated elsewhere.
+  // The current page stays (faded) until the next one has drawn something,
+  // and the title sweeps until the next one has finished loading.
+  root.setAttribute("aria-busy", "true");
+  loading.begin();
   const attach = new MutationObserver(() => {
     attach.disconnect();
-    if (mine === generation) put(root, mount);
+    if (mine === generation) { put(root, mount); root.removeAttribute("aria-busy"); }
   });
   attach.observe(mount, { childList: true });
   try {
@@ -824,6 +847,9 @@ async function route() {
     setCrumbs();
     put(root, mount);
     put(view, emptyState(e.message, h("p", {}, h("a", { href: "#/" }, "Back to projects"))));
+  } finally {
+    loading.end();
+    if (mine === generation) root.removeAttribute("aria-busy");
   }
 }
 
