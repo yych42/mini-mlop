@@ -391,7 +391,7 @@ async function viewProjects() {
     const running = h("span", { class: "status RUNNING" }, h("i"), "");
     const last = h("td", { class: "muted" });
     return {
-      el: h("tr", {}, h("td", {}, h("a", { href: `#/projects/${encodeURIComponent(p.name)}` }, p.name)),
+      el: h("tr", {}, h("td", {}, h("a", { href: `/projects/${encodeURIComponent(p.name)}` }, p.name)),
         runs, h("td", {}, running), last),
       update(p) {
         setText(runs, String(p.runs));
@@ -464,7 +464,7 @@ async function viewProject(project) {
   const makeRow = (r) => {
     const box = h("input", { type: "checkbox", "aria-label": `Compare ${r.name}`, onchange: () => toggle(r.id, box) });
     const swatch = h("span", { class: "swatch" });
-    const link = h("a", { href: `#/runs/${r.id}` });
+    const link = h("a", { href: `/runs/${r.id}` });
     const badge = statusBadge(r);
     const started = h("td", { class: "muted" });
     const duration = h("td", { class: "num" });
@@ -547,7 +547,7 @@ async function viewProject(project) {
       me.access !== "admin" ? null : h("button", { class: "danger", onclick: async () => {
         if (!confirm(`Delete project "${project}" and all ${total} of its runs? This cannot be undone.`)) return;
         await api(base, { method: "DELETE" });
-        location.hash = "#/";
+        navigate("/");
       } }, "Delete project")),
     h("div", { class: "card tablewrap" }, h("table", {},
       h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "Run"), h("th", {}, "Status"), h("th", {}, "Started"),
@@ -571,7 +571,7 @@ const DATA = ["HISTOGRAM", "TABLE"];
 
 async function viewRun(id, requested) {
   let [run, me] = await Promise.all([api(`/api/runs/${id}`), who()]);
-  setCrumbs([run.project, `#/projects/${encodeURIComponent(run.project)}`], [run.name]);
+  setCrumbs([run.project, `/projects/${encodeURIComponent(run.project)}`], [run.name]);
 
   const kinds = (list) => run.series.filter((s) => list.includes(s.kind));
   const metricNames = () => run.series.filter((s) => s.kind === "METRIC").map((s) => s.name);
@@ -602,7 +602,7 @@ async function viewRun(id, requested) {
   // Tabs appear as the run starts logging the things they show.
   const tabbar = h("div", { class: "tabs", role: "tablist" });
   const paintTabs = () => reconcile(tabbar, available(), ([k]) => k, ([k, label]) => ({
-    el: h("button", { role: "tab", "aria-selected": String(k === tab), onclick: () => (location.hash = `#/runs/${id}/${k}`) }, label),
+    el: h("button", { role: "tab", "aria-selected": String(k === tab), onclick: () => navigate(`/runs/${id}/${k}`) }, label),
   }));
   paintHead();
   paintTabs();
@@ -613,7 +613,7 @@ async function viewRun(id, requested) {
       !writable ? null : h("button", { class: "danger", onclick: async () => {
         if (!confirm(`Delete run "${run.name}" and everything it logged? This cannot be undone.`)) return;
         await api(`/api/runs/${id}`, { method: "DELETE" });
-        location.hash = `#/projects/${encodeURIComponent(run.project)}`;
+        navigate(`/projects/${encodeURIComponent(run.project)}`);
       } }, "Delete")),
     tabbar, body);
 
@@ -1168,7 +1168,8 @@ async function route() {
   cleanups.splice(0).forEach((fn) => fn());
   document.getElementById("tooltip").hidden = true;
   peek.hide();
-  const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  window.dispatchEvent(new Event("routechange"));
+  const parts = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
   const mount = (view = h("div"));
   // The current page stays (faded) until the next one has drawn something,
   // and the title sweeps until the next one has finished loading.
@@ -1191,7 +1192,7 @@ async function route() {
     if (e instanceof Unauthorized) return showLogin();
     setCrumbs();
     put(root, mount);
-    put(view, emptyState(e.message, h("p", {}, h("a", { href: "#/" }, "Back to projects"))));
+    put(view, emptyState(e.message, h("p", {}, h("a", { href: "/" }, "Back to projects"))));
   } finally {
     // Hand over to the cards: they start their first loads when they are
     // seen on screen, a frame or two after the view is attached. Ending a
@@ -1202,5 +1203,25 @@ async function route() {
 }
 
 initAgent({ h, put, api, who, Unauthorized, onUnauthorized: () => showLogin() });
-window.addEventListener("hashchange", route);
+// Pages have real addresses (/runs/8), so the server knows which one is being
+// asked for and can send its data along. Moving between them stays in the
+// page: links and navigate() change the address without a reload.
+function navigate(path, { replace = false } = {}) {
+  if (path === location.pathname + location.search) return route();
+  history[replace ? "replaceState" : "pushState"](null, "", path);
+  window.scrollTo(0, 0);
+  return route();
+}
+
+document.addEventListener("click", (e) => {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const a = e.target.closest && e.target.closest("a[href]");
+  if (!a || a.target || a.hasAttribute("download") || a.origin !== location.origin) return;
+  if (a.getAttribute("href").startsWith("#") || a.pathname.startsWith("/api/")) return;
+  e.preventDefault();
+  navigate(a.pathname + a.search);
+});
+window.addEventListener("popstate", route);
+// Addresses used to live after a "#"; old links and bookmarks still work.
+if (location.hash.startsWith("#/")) history.replaceState(null, "", location.hash.slice(1));
 route();

@@ -66,7 +66,7 @@ class Settings:
     url_webhook: str = None
 
     _url_routes = {
-        "url_token": "/#/settings",
+        "url_token": "/settings",
         "url_login": "/api/slug",
         "url_start": "/api/runs/create",
         "url_stop": "/api/runs/status/update",

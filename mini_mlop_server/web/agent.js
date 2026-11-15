@@ -16,7 +16,7 @@ export function initAgent(deps) {
     if (e.key === "Escape" && panel && !panel.hidden) toggle(false);
   });
   // Moving to another project starts from that project, unless a conversation is open.
-  window.addEventListener("hashchange", async () => {
+  window.addEventListener("routechange", async () => {
     if (!panel || panel.hidden || chatId || busy) return;
     await followPage();
     greet();
@@ -37,7 +37,7 @@ function inline(text) {
     else if (m[4]) {
       const ok = /^(https?:\/\/|#\/)/.test(m[5]);
       out.push(ok ? h("a", m[5].startsWith("#") ? { href: m[5] } : { href: m[5], target: "_blank", rel: "noopener noreferrer" }, m[4]) : m[0]);
-    } else if (m[6]) out.push(h("a", { href: `#/runs/${m[7]}` }, m[6]));
+    } else if (m[6]) out.push(h("a", { href: `/runs/${m[7]}` }, m[6]));
     last = re.lastIndex;
   }
   if (last < text.length) out.push(text.slice(last));
@@ -120,7 +120,7 @@ function greet() {
 
 // The project shown on the current page, or null.
 async function pageProject() {
-  const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  const parts = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
   if (parts[0] === "projects" && parts[1]) return parts[1];
   if (parts[0] === "runs" && /^\d+$/.test(parts[1] || "")) {
     try { return (await api(`/api/runs/${parts[1]}`)).project || null; } catch { return null; }
@@ -175,7 +175,7 @@ async function send(text) {
   try {
     const res = await fetch("/api/chat", {
       method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, chat_id: chatId, project: scope, context: { route: location.hash } }),
+      body: JSON.stringify({ message: text, chat_id: chatId, project: scope, context: { route: location.pathname } }),
     });
     if (res.status === 401) return onUnauthorized();
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `request failed (${res.status})`);
@@ -251,7 +251,7 @@ async function toggle(force) {
     const { ready } = await api("/api/agent/config");
     if (!ready) {
       put(log, h("div", { class: "msg hint" }, h("p", {}, "The assistant needs a language-model provider and a model before it can answer."),
-        h("p", {}, h("a", { href: "#/settings", onclick: () => toggle(false) }, "Set one up in Settings"))));
+        h("p", {}, h("a", { href: "/settings", onclick: () => toggle(false) }, "Set one up in Settings"))));
       sendButton.disabled = true;
       return;
     }

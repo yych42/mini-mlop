@@ -37,7 +37,7 @@ def test_metrics_round_trip(server, api, tmp_path):
     run.finish()
 
     run_id = run.settings._op_id
-    assert run.settings.url_view == f"{server.url}/#/runs/{run_id}"
+    assert run.settings.url_view == f"{server.url}/runs/{run_id}"
 
     _, info = api.get(f"/api/runs/{run_id}")
     assert info["name"] == "metrics" and info["project"] == "e2e"

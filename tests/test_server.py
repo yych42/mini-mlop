@@ -408,10 +408,31 @@ def test_web_ui_is_served(server):
     assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
     for asset in ("/app.js", "/chart.js", "/style.css", "/favicon.svg"):
         assert anon.get(asset, raw=True)[0] == 200, asset
-    etag = headers["ETag"]
-    assert anon.get("/", raw=True, headers={"If-None-Match": etag})[0] == 304
+    etag = anon.get("/app.js", raw=True)[2]["ETag"]
+    assert anon.get("/app.js", raw=True, headers={"If-None-Match": etag})[0] == 304
     assert anon.get("/../store.py", raw=True)[0] == 404
     assert anon.get("/%2e%2e/store.py", raw=True)[0] == 404
+
+
+def test_pages_have_addresses_and_assets_cache_forever(server):
+    import re
+
+    anon = Api(server.url)
+    # Every view's address answers with the page, which is never cached.
+    for path in ("/", "/projects/demo", "/runs/3", "/runs/3/system", "/settings", "/query"):
+        status, body, headers = anon.get(path, raw=True)
+        assert status == 200 and b'id="boot"' in body, path
+        assert headers["Cache-Control"] == "no-store"
+    assert anon.get("/runs/nope", raw=True)[0] == 404
+    # The page names its assets under a build hash; those never change, so
+    # they may be kept forever.
+    _, body, _ = anon.get("/", raw=True)
+    assets = set(re.findall(rb'"(/assets/[0-9a-f]{12}/[\w.]+)"', body))
+    assert {a.rsplit(b"/", 1)[1] for a in assets} >= {b"app.js", b"style.css", b"chart.js"}
+    for asset in assets:
+        status, _, headers = anon.get(asset.decode(), raw=True)
+        assert status == 200 and "immutable" in headers["Cache-Control"], asset
+    assert b"{{" not in body
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="needs sys.stdlib_module_names")

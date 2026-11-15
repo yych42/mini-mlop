@@ -70,11 +70,46 @@ class Config:
         self.secret = secret  # unlocks stored provider keys; None = key file
 
 
+# Addresses the web UI answers with its page; the script in it draws the view.
+PAGES = re.compile(r"/(|index\.html|settings|query|projects/[^/]+|runs/\d+(/\w+)?)")
+
+
 class Static:
-    """The web UI: a handful of files read once and served from memory."""
+    """The web UI: a handful of files read once and served from memory.
+
+    Scripts, styles and images are also served under /assets/<build>/, where
+    <build> is a hash of all of them. Those addresses change whenever any
+    file does, so browsers and the CDN in front may keep them forever: after
+    the first visit a page load asks for no asset at all. The page itself
+    is rendered per request (it names the current build, and carries the
+    data the view is about to ask for) and is never cached."""
 
     def __init__(self, root):
         self.files = {}
+        self.assets = {}
+        self.build = ""
+        self.page_template = ""
+        self._load(root)
+        build = hashlib.sha256()
+        for path in sorted(self.files):
+            build.update(path.encode() + b"\0" + self.files[path][0])
+        self.build = build.hexdigest()[:12]
+        for path, entry in self.files.items():
+            if not path.endswith(".html"):
+                self.assets[f"/assets/{self.build}{path}"] = entry
+        if "/index.html" in self.files:
+            self.page_template = self.files.pop("/index.html")[0].decode()
+
+    def page(self, boot=None):
+        """index.html for one request. `boot` maps API addresses to the
+        answers the view would otherwise have to come back and ask for."""
+        data = json.dumps(boot or {}, separators=(",", ":"))
+        # Inert data in a script element: it must not be able to end it.
+        data = data.replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+        html = self.page_template.replace("{{assets}}", f"/assets/{self.build}")
+        return html.replace("{{boot}}", data).encode()
+
+    def _load(self, root):
         for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
             path = os.path.join(root, name)
             if not os.path.isfile(path):
@@ -90,8 +125,6 @@ class Static:
                 ctype,
                 '"' + hashlib.sha256(body).hexdigest()[:16] + '"',
             )
-        if "/index.html" in self.files:
-            self.files["/"] = self.files["/index.html"]
 
 
 ROUTES = []
@@ -145,8 +178,14 @@ class Handler(BaseHTTPRequestHandler):
         self.query = parse_qs(url.query)
         path = unquote(url.path)
         try:
-            if method == "GET" and path in self.server.static.files:
-                return self.send_static(path)
+            if method == "GET":
+                static = self.server.static
+                if path in static.assets:
+                    return self.send_static(static.assets[path], forever=True)
+                if path in static.files:
+                    return self.send_static(static.files[path])
+                if PAGES.fullmatch(path) and static.page_template:
+                    return self.send_page(path)
             for m, regex, fn, needs_auth, need in ROUTES:
                 match = regex.match(path)
                 if not match:
@@ -398,8 +437,16 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionError, socket.timeout):
             self.close_connection = True
 
-    def send_static(self, path):
-        body, gz, ctype, etag = self.server.static.files[path]
+    def send_page(self, path):
+        self.send_body(
+            200,
+            self.server.static.page(),
+            "text/html; charset=utf-8",
+            [("Content-Security-Policy", CSP), ("Referrer-Policy", "same-origin")],
+        )
+
+    def send_static(self, entry, forever=False):
+        body, gz, ctype, etag = entry
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
             self.send_header("ETag", etag)
@@ -415,7 +462,10 @@ class Handler(BaseHTTPRequestHandler):
         if encoded:
             self.send_header("Content-Encoding", "gzip")
         self.send_header("ETag", etag)
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header(
+            "Cache-Control",
+            "public, max-age=31536000, immutable" if forever else "no-cache",
+        )
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", CSP)
         self.send_header("Referrer-Policy", "same-origin")
@@ -550,7 +600,7 @@ def runs_create(h):
             "runId": run_id,
             "projectName": b.get("projectName"),
             "organizationSlug": "mini-mlop",
-            "url": f"{h.base_url()}/#/runs/{run_id}",
+            "url": f"{h.base_url()}/runs/{run_id}",
         }
     )
 
