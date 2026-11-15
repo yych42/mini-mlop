@@ -414,6 +414,46 @@ def test_web_ui_is_served(server):
     assert anon.get("/%2e%2e/store.py", raw=True)[0] == 404
 
 
+def test_page_carries_the_data_its_view_asks_for(server, api):
+    import re
+
+    run_id = api.new_run(project="boot", name="r1")
+    api.ingest("metrics", run_id, [{"time": i, "step": i, "data": {"loss": 1.0 / (i + 1), "sys/cpu": 5}}
+                                   for i in range(20)])
+    api.ingest("data", run_id, [{"time": 1, "step": 1, "logName": "t", "dataType": "TABLE",
+                                 "data": json.dumps({"table": [["</script><b>x"]]})}])
+
+    def boot(path, key="default"):
+        status, body, _ = api.get(path, raw=True, key=key)
+        assert status == 200
+        raw = re.search(rb'<script type="application/json" id="boot">(.*?)</script>', body, re.S).group(1)
+        assert b"</script" not in raw and b"<b>" not in raw  # logged text cannot break out
+        return json.loads(raw)
+
+    # Each answer is exactly what the API would have said.
+    b = boot(f"/runs/{run_id}")
+    assert b["/api/me"]["access"] == "admin"
+    assert b[f"/api/runs/{run_id}"] == api.get(f"/api/runs/{run_id}")[1]
+    table = f"/api/runs/{run_id}/data?name=t&limit=64&budget=262144&after=0"
+    assert b[table] == api.get(table)[1]
+    assert b[table]["entries"][0]["data"]["table"] == [["</script><b>x"]]
+    (seed,) = b["#series"]
+    assert (seed["run"], seed["axis"], seed["points"]) == (run_id, "step", 600)
+    assert list(seed["data"]) == ["loss"] and seed["data"]["loss"]["count"] == 20
+    assert seed["of"]["status"] == "RUNNING"
+    (seed,) = boot(f"/runs/{run_id}/system")["#series"]
+    assert seed["axis"] == "time" and list(seed["data"]) == ["sys/cpu"]
+    assert "/api/projects" in boot("/")
+    b = boot("/projects/boot")
+    assert b["/api/projects/boot/runs"]["total"] == 1 and b["#series"][0]["points"] == 400
+
+    # Nothing is given away: no key, no data; a project key gets only its project.
+    assert boot(f"/runs/{run_id}", key=None) == {}
+    _, other = api.post("/api/keys", {"name": "elsewhere", "access": "read", "project": "other"})
+    b = boot(f"/runs/{run_id}", key=other["key"])
+    assert list(b) == ["/api/me"] and b["/api/me"]["project"] == "other"
+
+
 def test_pages_have_addresses_and_assets_cache_forever(server):
     import re
 

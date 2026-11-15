@@ -39,6 +39,28 @@ CSP = (
 )
 
 
+MEDIA_KINDS = ("IMAGE", "AUDIO", "VIDEO", "TEXT", "ARTIFACT", "FILE")
+DATA_KINDS = ("HISTOGRAM", "TABLE")
+PRELOAD_CARDS = 18  # a screen and a half of the chart grid
+
+
+def _enc(text):
+    """JavaScript's encodeURIComponent, so keys match what the UI asks for."""
+    return quote(str(text), safe="-_.!~*'()")
+
+
+def _group(name):
+    i = name.find("/")
+    return name[:i] if i > 0 else ""
+
+
+def _screenful(names):
+    """The cards the UI shows first: it lays series out grouped by the
+    prefix before "/", groups in alphabetical order."""
+    order = sorted(range(len(names)), key=lambda i: (_group(names[i]), i))
+    return [names[i] for i in order[:PRELOAD_CARDS]]
+
+
 class HTTPError(Exception):
     def __init__(self, status, message):
         super().__init__(message)
@@ -386,11 +408,11 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- responses --------------------------------------------------------
 
-    def send_body(self, status, body, ctype, headers=()):
+    def send_body(self, status, body, ctype, headers=(), level=1):
         self.drain()
         encoded = False
         if len(body) > 1024 and "gzip" in self.headers.get("Accept-Encoding", ""):
-            body, encoded = gzip.compress(body, 1), True
+            body, encoded = gzip.compress(body, level), True
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -424,6 +446,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def send_json(self, obj, status=200, headers=()):
+        if getattr(self, "_answering", False):
+            self._answer = obj
+            return
         self.send_body(
             status,
             json.dumps(obj, separators=(",", ":")).encode(),
@@ -438,12 +463,107 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def send_page(self, path):
+        boot = {}
+        try:
+            self.authenticate()
+            boot = self.bootstrap(path)
+        except HTTPError:
+            pass  # not signed in: the page asks, is refused, and shows the login
         self.send_body(
             200,
-            self.server.static.page(),
+            self.server.static.page(boot),
             "text/html; charset=utf-8",
             [("Content-Security-Policy", CSP), ("Referrer-Policy", "same-origin")],
+            level=6,  # the page carries its data; worth squeezing before the tunnel
         )
+
+    def answer(self, url):
+        """What a GET of `url` would send back to this caller, or None if it
+        would be an error. Runs the same handler, so the same access rules."""
+        parts = urlsplit(url)
+        path = unquote(parts.path)
+        saved, self.query = self.query, parse_qs(parts.query)
+        self._answer, self._answering = None, True
+        try:
+            for method, regex, fn, _, need in ROUTES:
+                match = regex.match(path) if method == "GET" else None
+                if match:
+                    self.require(need)
+                    fn(self, **match.groupdict())
+                    return self._answer
+            return None
+        except (HTTPError, NotFound, Invalid):
+            return None
+        finally:
+            self.query, self._answering = saved, False
+
+    def bootstrap(self, path):
+        """Answers to the requests the view at `path` is about to make, to
+        send inside the page. A page load is then one round trip instead of
+        one for the page, one for the view's data and one for its cards.
+
+        Keys are the exact addresses web/app.js asks for; a key it never
+        asks for is only wasted bytes, and one that is missing is fetched
+        as before, so the two can drift without breaking anything. Chart
+        data goes under "#series", which seeds the browser's series cache."""
+        boot, series = {}, []
+
+        def add(url):
+            out = self.answer(url)
+            if out is not None:
+                boot[url] = out
+            return out
+
+        def add_series(run, names, points, axis):
+            if not names:
+                return
+            query = "&".join(f"name={_enc(n)}" for n in names)
+            data = self.answer(f"/api/runs/{run['id']}/metrics?{query}&points={points}&x={axis}")
+            if data:
+                # `of` lets the browser tell whether the run has moved on since.
+                of = {k: run[k] for k in ("status", "heartbeat_at", "finished_at")}
+                series.append({"run": run["id"], "axis": axis, "points": points,
+                               "of": of, "data": data})
+
+        add("/api/me")
+        parts = [p for p in path.split("/") if p]
+        if not parts or parts[0] == "index.html":
+            add("/api/projects")
+        elif parts[0] == "projects":
+            listing = add(f"/api/projects/{_enc(parts[1])}/runs")
+            # The compare view starts with the five newest runs ticked.
+            chosen = (listing or {}).get("runs", [])[:5]
+            names = sorted({n for r in chosen for n in r["metrics"] if _group(n) != "sys"})
+            first = set(_screenful(names))
+            for r in chosen:
+                add_series(r, [n for n in r["metrics"] if n in first], 400, "step")
+        elif parts[0] == "runs":
+            run_id = parts[1]
+            run = add(f"/api/runs/{run_id}")
+            if run:
+                metrics = [s["name"] for s in run["series"] if s["kind"] == "METRIC"]
+                kinds = {s["name"]: s["kind"] for s in run["series"]}
+                tab = parts[2] if len(parts) > 2 else "charts"
+                sys_names = [n for n in metrics if _group(n) == "sys"]
+                media = [n for n, k in kinds.items() if k in MEDIA_KINDS]
+                if tab == "system" and sys_names:
+                    add_series(run, _screenful(sys_names), 600, "time")
+                elif tab == "media" and media:
+                    for name in media[:12]:
+                        add(f"/api/runs/{run_id}/files?name={_enc(name)}")
+                elif tab == "logs" and run["log_lines"]:
+                    add(f"/api/runs/{run_id}/logs?limit=1000")
+                elif tab == "model" and run["has_graph"]:
+                    add(f"/api/runs/{run_id}/graph")
+                elif tab != "overview":
+                    data = [n for n, k in kinds.items() if k in DATA_KINDS]
+                    cards = _screenful([n for n in metrics if _group(n) != "sys"] + data)
+                    add_series(run, [n for n in cards if kinds[n] == "METRIC"], 600, "step")
+                    for name in [n for n in cards if kinds[n] in DATA_KINDS][:3]:
+                        add(f"/api/runs/{run_id}/data?name={_enc(name)}&limit=64&budget=262144&after=0")
+        if series:
+            boot["#series"] = series
+        return boot
 
     def send_static(self, entry, forever=False):
         body, gz, ctype, etag = entry
