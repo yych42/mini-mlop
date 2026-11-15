@@ -1006,18 +1006,26 @@ function dataCard(current, series) {
   // a load asks only for the ones it lacks, newest first within a budget;
   // a step picked on the slider that is not here yet is fetched on its own.
   const bodies = new Map();
-  let newest = 0, wanted = null;
+  let newest = 0, wanted = null, settle = 0;
   const steps = stepped((entry) => {
     wanted = entry.id;
-    if (bodies.has(entry.id)) return redraw(bodies.get(entry.id) || {});
+    clearTimeout(settle);
+    if (bodies.has(entry.id)) {
+      frame.removeAttribute("aria-busy");
+      return redraw(bodies.get(entry.id) || {});
+    }
+    // Dragging the slider passes over every step on the way. Only one it
+    // rests on is worth a request; the ones in between are skipped.
     frame.setAttribute("aria-busy", "true");
-    track(settled(`/api/runs/${run.id}/data?${q([["name", series.name], ["entry", entry.id]])}`, current()))
-      .then((r) => {
-        bodies.set(entry.id, r.entry.data);
-        if (wanted === entry.id) redraw(r.entry.data || {});
-      })
-      .catch(handleError)
-      .finally(() => { if (wanted === entry.id) frame.removeAttribute("aria-busy"); });
+    settle = setTimeout(() => {
+      track(settled(`/api/runs/${run.id}/data?${q([["name", series.name], ["entry", entry.id]])}`, current()))
+        .then((r) => {
+          bodies.set(entry.id, r.entry.data);
+          if (wanted === entry.id) redraw(r.entry.data || {});
+        })
+        .catch(handleError)
+        .finally(() => { if (wanted === entry.id) frame.removeAttribute("aria-busy"); });
+    }, SETTLE_MS);
   });
   const el = gridCard(series.name, "card chart",
     h("span", { class: "latest" }, series.kind === "HISTOGRAM" ? "histogram" : "table"), frame, steps.el, note);
@@ -1033,7 +1041,7 @@ function dataCard(current, series) {
     steps.set(r.entries);
     setText(note, r.total > r.entries.length ? `showing ${r.entries.length} of ${r.total} logged steps` : "");
   };
-  return { el, load, destroy: () => ro && ro.disconnect() };
+  return { el, load, destroy: () => { clearTimeout(settle); if (ro) ro.disconnect(); } };
 }
 
 // A logged mlop.Table. Numbers are right-aligned in tabular figures, text is
@@ -1041,6 +1049,7 @@ function dataCard(current, series) {
 // peek). The scroll box persists across steps, so moving the slider keeps the
 // rows and columns you were looking at in view.
 const TABLE_ROWS = 500;
+const SETTLE_MS = 150;  // how long the step slider must rest before its step is fetched
 
 function dataTable() {
   const scroller = h("div", { class: "datatable", tabindex: "0", role: "region", "aria-label": "Table" });
