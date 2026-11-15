@@ -111,6 +111,55 @@ def uncaptured(worker):
     return run
 
 
+def _prints_to_console(handler) -> bool:
+    """Whether a logging handler writes to this process's stdout or stderr."""
+    if isinstance(handler, logging.FileHandler):
+        return False
+    stream = getattr(handler, "stream", None)
+    if stream is None:  # rich's handler writes to its console's file
+        stream = getattr(getattr(handler, "console", None), "file", None)
+    while isinstance(stream, ConsoleHandler):
+        stream = stream.stream
+    if stream is None:
+        return False
+    ours = [sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__, _stdout, _stderr]
+    for i, std in enumerate(ours):
+        while isinstance(std, ConsoleHandler):
+            std = ours[i] = std.stream
+    if any(stream is std for std in ours):
+        return True
+    try:
+        return stream.fileno() in (1, 2)
+    except Exception:  # not backed by a file descriptor
+        return False
+
+
+class HostHandlers(logging.Handler):
+    """Stands in for propagation on one of the package's loggers: passes each
+    record to the handlers the host has set up above it, except those that
+    print to stdout or stderr. The package prints its messages itself, so such
+    a handler would show every message twice, and with console capture on
+    would put the second copy into the run's own console log."""
+
+    def __init__(self, logger):
+        super().__init__()
+        self.logger = logger
+
+    def emit(self, record):
+        source = self.logger.parent
+        while source is not None:
+            for handler in source.handlers:
+                if (
+                    record.levelno >= handler.level
+                    and handler not in self.logger.handlers
+                    and not _prints_to_console(handler)
+                ):
+                    handler.handle(record)
+            if not source.propagate:
+                break
+            source = source.parent
+
+
 def stream_formatter(settings):
     if settings.x_log_level <= logging.DEBUG:
         return ColorFormatter(
@@ -141,10 +190,14 @@ def setup_logger(settings, logger, console=None) -> None:
 
     logger.setLevel(settings.x_log_level)
 
-    if len(logger.handlers) == 0:
+    if not any(isinstance(h, HostHandlers) for h in logger.handlers):
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(stream_formatter(settings))
         logger.addHandler(stream_handler)
+        # We print our own messages, so the host's logging must not print
+        # them a second time; everything else of the host's still gets them.
+        logger.addHandler(HostHandlers(logger))
+        logger.propagate = False
 
     if settings._op_id and not settings.disable_console:
         if isinstance(sys.stdout, ConsoleHandler):  # already capturing
@@ -156,6 +209,7 @@ def teardown_logger(logger, console=None):
     for h in logger.handlers[:]:
         logger.removeHandler(h)
         h.close()
+    logger.propagate = True
     if console:
         builtins.input = _input
         for name in ("stdout", "stderr"):

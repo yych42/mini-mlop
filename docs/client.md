@@ -60,6 +60,11 @@ Names containing `/` are grouped by their prefix in the UI. Everything printed t
 stderr while a run is active is captured and shown under **Logs**. `mlop.log(...)`,
 `mlop.alert(...)` and `mlop.finish()` act on the most recent run.
 
+The logger prints its own messages to the terminal. If your script configures Python `logging`,
+in any order relative to `mlop.init()`, nothing needs adjusting: those messages still reach your
+log files and other handlers, and are not printed a second time by a handler of yours that writes
+to stdout or stderr.
+
 Pressing **Stop run** in the UI raises `KeyboardInterrupt` in your script's main thread within a
 few seconds, so `try/finally` cleanup runs and buffered data is still uploaded.
 

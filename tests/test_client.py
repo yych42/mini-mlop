@@ -172,6 +172,45 @@ def test_logging_configured_after_init_does_not_loop(
     assert not [m for m in messages if "HTTP Request" in m or "mini_mlop" in m]
 
 
+def test_own_messages_print_once_under_host_logging(server, api, tmp_path, capsys):
+    """The package prints its own messages. The host's logging gets them too,
+    but not the handlers that would print them a second time."""
+    import logging
+    import sys
+
+    class Collect(logging.Handler):  # stands for the host's log file
+        def __init__(self):
+            super().__init__()
+            self.seen = []
+
+        def emit(self, record):
+            self.seen.append(record.getMessage())
+
+    settings = {"url": server.url, "_auth": server.key, **FAST, "disable_console": False}
+    run = mlop.init(dir=str(tmp_path / "client"), project="e2e", settings=settings)
+    root = logging.getLogger()
+    to_terminal, to_file = logging.StreamHandler(sys.stderr), Collect()
+    root.addHandler(to_terminal)
+    root.addHandler(to_file)
+    try:
+        logging.getLogger("mini_mlop").warning("a message of our own")
+        logging.getLogger("host.app").warning("a message of the host")
+    finally:
+        run.finish()
+        root.removeHandler(to_terminal)
+        root.removeHandler(to_file)
+    err = capsys.readouterr().err
+    assert err.count("a message of our own") == 1
+    assert err.count("a message of the host") == 1
+    assert to_file.seen.count("a message of our own") == 1
+    assert logging.getLogger("mini_mlop").propagate  # as found, once the run is over
+
+    _, logs = api.get(f"/api/runs/{run.settings._op_id}/logs")
+    messages = [l["message"] for l in logs["lines"]]
+    assert "a message of the host" in messages
+    assert not [m for m in messages if "a message of our own" in m]
+
+
 def test_finish_restores_only_its_own_streams(server, tmp_path):
     import sys
 
