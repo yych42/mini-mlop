@@ -47,6 +47,9 @@ def test_metrics_round_trip(server, api, tmp_path):
     kinds = {s["name"]: s["kind"] for s in info["series"]}
     assert kinds["train/loss"] == "METRIC"
     assert any(n.startswith("sys/") for n in kinds), "system metrics are logged"
+    # the System tab draws disk space against what the volume holds
+    assert {"sys/disk.used", "sys/disk.free"} <= set(kinds)
+    assert info["system"]["volume"]["total"] > 0
 
     _, m = api.get(f"/api/runs/{run_id}/metrics?name=train/loss&name=train/acc")
     assert m["train/loss"]["count"] == 200

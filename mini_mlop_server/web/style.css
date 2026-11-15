@@ -16,6 +16,9 @@
   --serious: #ec835a;
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
   --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  /* one hue, light to dark: how high a value is, for heatmaps */
+  --h0: #eef2f8; --h1: #bcd5f3; --h2: #7fb0ea; --h3: #2a78d6; --h4: #0f3f85;
+  --before: #b9b7b0;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 @media (prefers-color-scheme: dark) {
@@ -32,10 +35,14 @@
     --accent: #3987e5;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
     --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    --h0: #20252c; --h1: #213f66; --h2: #2a5fa3; --h3: #3987e5; --h4: #b4d4fa;
+    --before: #6b6a64;
   }
   .brand img { filter: invert(1); }
 }
 * { box-sizing: border-box; }
+/* `hidden` means hidden, whatever display a rule below gives the element. */
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
   background: var(--page); color: var(--text);
@@ -160,6 +167,50 @@ td.clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-spa
 .chart canvas { display: block; width: 100%; height: 210px; cursor: crosshair; }
 .chart.wide canvas { height: 360px; }
 .chart .note { color: var(--text-3); font-size: 11.5px; min-height: 16px; }
+
+/* The System tab: a row of cards per device, every card on one grid. */
+.devices { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+.devices > .span { grid-column: 1 / -1; }
+.devices > h2 { grid-column: 1 / -1; margin: 14px 0 -4px; display: flex; align-items: baseline; gap: 8px; }
+.devices > h2:first-child { margin-top: 18px; }
+.devices > h2 .sub { font-size: 12px; font-weight: 400; color: var(--text-3); text-transform: none; letter-spacing: 0; }
+.devices .cardhead { min-height: 28px; }
+.devices .cardhead .sub { color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.chart .legend { margin: 4px 0; min-height: 20px; align-items: center; }
+.swatch.box { height: 10px; width: 10px; }
+.ramp { display: inline-block; width: 90px; height: 8px; border-radius: 2px; vertical-align: middle; margin: 0 6px;
+        background: linear-gradient(90deg, var(--h0), var(--h1), var(--h2), var(--h3), var(--h4)); }
+/* Two measures sharing a slot, each on its own scale. */
+.pair { display: flex; flex-direction: column; gap: 6px; }
+.pair .k, .disk .k { font-size: 12px; color: var(--text-2); display: flex; justify-content: space-between; gap: 8px; }
+.pair .k b, .disk .k b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart .pair canvas, .chart .disk canvas { height: 92px; }
+/* Two views of one card. */
+.switch { margin-left: auto; position: relative; display: grid; grid-template-columns: 1fr 1fr; flex: none;
+          background: var(--page); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.switch::before { content: ""; position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc(50% - 2px);
+                  border-radius: 6px; background: var(--raised); box-shadow: 0 1px 3px rgba(0,0,0,.18);
+                  transition: transform .18s ease; }
+.switch[data-on="1"]::before { transform: translateX(100%); }
+.switch button { position: relative; height: auto; border: 0; background: none; border-radius: 6px; padding: 5px 11px;
+                 font-size: 12px; line-height: 1.2; color: var(--text-2); white-space: nowrap;
+                 display: flex; align-items: center; justify-content: center; gap: 6px; }
+.switch button:hover { background: none; color: var(--text); }
+.switch button[aria-pressed=true] { color: var(--text); font-weight: 600; }
+.switch svg { width: 13px; height: 13px; flex: none; }
+@media (prefers-reduced-motion: reduce) { .switch::before { transition: none; } }
+/* Disk: where the space stands, and what this run did to it. */
+.disk { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr); gap: 10px 28px; align-items: start; }
+.disk.alone { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 760px) { .disk { grid-template-columns: minmax(0, 1fr); } }
+.disk .stand { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding-top: 2px; }
+.disk .big { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.disk .big small { font-size: 13px; font-weight: 500; color: var(--text-2); letter-spacing: 0; }
+.meter { display: flex; gap: 2px; height: 14px; }
+.meter i { display: block; height: 100%; border-radius: 3px; min-width: 4px; }
+.meter .before { background: var(--before); } .meter .ours { background: var(--s1); } .meter .free { background: var(--grid); }
+.disk .pace { color: var(--text-2); font-size: 13px; min-height: 20px; }
+.disk .pace.soon { color: var(--serious); font-weight: 600; }
 /* A step picked on the slider whose data is still on its way. */
 .chart [aria-busy=true] { opacity: .45; transition: opacity .15s .1s; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-2);

@@ -1,7 +1,11 @@
 // Canvas charts for the mini-mlop UI: a multi-series line chart with a crosshair
 // readout, and a histogram. A series is {label, color, x, y, min?, max?}; it
 // may also be `quiet` (a hairline with no readout row) or `hidden` (a readout
-// row with no line), and its label may be a function of the point's index. Small on purpose, so nothing has to be bundled.
+// row with no line), and its label may be a function of the point's index.
+// `width` and `dashed` style its line, `bandAlpha` its min–max band, and
+// `value(i)` replaces the readout's number with text of the series' own.
+// Options beyond the toolbar's: `zero` keeps zero on the axis, `yMin`/`yMax`
+// pin its ends, `ticks` is how many gridlines to aim for. Small on purpose, so nothing has to be bundled.
 
 const tooltip = document.getElementById("tooltip");
 const M = { left: 58, right: 12, top: 8, bottom: 24 };
@@ -38,10 +42,63 @@ function fmtBytes(v, digits = 3) {
   return `${+v.toPrecision(digits)} ${units[i]}`;
 }
 
+// `binary` units count in 1024s: their axis ticks are round in the unit that
+// is shown (50 GB, not 46.57 GB).
 const UNITS = {
-  bytes: { tick: (v) => fmtBytes(v, 5), value: (v) => fmtBytes(v, 4) },
+  bytes: { binary: true, tick: (v) => fmtBytes(v, 5), value: (v) => fmtBytes(v, 4) },
+  rate: { binary: true, tick: (v) => `${fmtBytes(v, 3)}/s`, value: (v) => `${fmtBytes(v, 3)}/s` },
   percent: { tick: (v) => `${+v.toPrecision(3)}%`, value: (v) => `${+v.toPrecision(4)}%` },
+  watts: { tick: (v) => `${+v.toPrecision(3)} W`, value: (v) => `${+v.toPrecision(4)} W` },
+  celsius: { tick: (v) => `${+v.toPrecision(3)} °C`, value: (v) => `${+v.toPrecision(3)} °C` },
 };
+
+export function fmtUnit(unit, v) {
+  return (UNITS[unit] || { value: fmt }).value(v);
+}
+
+// Round tick values for an axis from lo to hi in a unit.
+function unitTicks(unit, lo, hi, count) {
+  if (!(UNITS[unit] || {}).binary) return niceTicks(lo, hi, count);
+  let base = 1;
+  while (Math.max(Math.abs(lo), Math.abs(hi)) / base >= 1024 && base < 1024 ** 5) base *= 1024;
+  return niceTicks(lo / base, hi / base, count).map((t) => t * base);
+}
+
+function timeTicks(x0, x1, origin, pw) {
+  return niceTicks(x0 - origin, x1 - origin, Math.max(2, Math.floor(pw / 90))).map((t) => t + origin);
+}
+
+// The readout that follows the pointer: a heading and rows of
+// [colour or null, value, name], placed beside the pointer (or at x, y when
+// the keyboard moved the crosshair).
+function showReadout(canvas, event, x, head, rows) {
+  const top = document.createElement("div");
+  top.className = "x";
+  top.textContent = head;
+  tooltip.replaceChildren(top, ...rows.map(([color, value, name]) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    const key = document.createElement("span");
+    key.className = "swatch";
+    if (color) key.style.background = color; else key.style.visibility = "hidden";
+    const b = document.createElement("b");
+    b.textContent = value;
+    const n = document.createElement("span");
+    n.className = "n";
+    n.textContent = name;
+    row.append(key, b, n);
+    return row;
+  }));
+  tooltip.hidden = false;
+  const box = canvas.getBoundingClientRect();
+  const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+  const cx = event ? event.clientX : box.left + x;
+  const cy = event ? event.clientY : box.top + 30;
+  let left = cx + 14;
+  if (left + tw > window.innerWidth - 8) left = cx - tw - 14;
+  tooltip.style.left = `${Math.max(8, left)}px`;
+  tooltip.style.top = `${Math.max(8, Math.min(cy - th / 2, window.innerHeight - th - 8))}px`;
+}
 
 function axisTick(v) {
   if (v === 0) return "0";
@@ -108,7 +165,8 @@ function nearest(xs, x) {
 export class LineChart {
   constructor(canvas, options = {}) {
     this.canvas = canvas;
-    this.options = { smooth: 0, logY: false, axis: "step", origin: 0, unit: null, ...options };
+    this.options = { smooth: 0, logY: false, axis: "step", origin: 0, unit: null, zero: false,
+      yMin: null, yMax: null, ticks: 4, ...options };
     this.series = [];
     this.hoverX = null;
     this._draw = this.draw.bind(this);
@@ -128,7 +186,7 @@ export class LineChart {
   }
 
   value(v) {
-    return (UNITS[this.options.unit] || { value: fmt }).value(v);
+    return fmtUnit(this.options.unit, v);
   }
 
   setOptions(options) {
@@ -197,10 +255,17 @@ export class LineChart {
       return;
     }
     const ty = logY ? Math.log10 : (v) => v;
+    const { zero, yMin, yMax, ticks } = this.options;
+    if (zero && !logY) { y0 = Math.min(y0, 0); y1 = Math.max(y1, 0); }
     let a = ty(y0), b = ty(y1);
     if (a === b) { a -= Math.abs(a) * 0.05 || 0.5; b += Math.abs(b) * 0.05 || 0.5; }
     const pad = (b - a) * 0.06;
     a -= pad; b += pad;
+    if (!logY) {
+      if (zero && y0 >= 0) a = 0;  // the baseline is the bottom edge, not a little above it
+      if (yMin != null) a = yMin;
+      if (yMax != null) b = yMax;
+    }
     if (x0 === x1) { x0 -= 0.5; x1 += 0.5; }
     const X = (x) => M.left + ((x - x0) / (x1 - x0)) * pw;
     const Y = (y) => M.top + (1 - (ty(y) - a) / (b - a)) * ph;
@@ -213,8 +278,8 @@ export class LineChart {
     ctx.textBaseline = "middle";
     ctx.textAlign = "right";
     const yt = logY
-      ? niceTicks(a, b, 4).filter((t) => Number.isInteger(t) || b - a < 2).map((t) => 10 ** t)
-      : niceTicks(a, b, 4);
+      ? niceTicks(a, b, ticks).filter((t) => Number.isInteger(t) || b - a < 2).map((t) => 10 ** t)
+      : unitTicks(this.options.unit, a, b, ticks);
     for (const t of yt) {
       const y = Math.round(Y(t)) + 0.5;
       ctx.beginPath(); ctx.moveTo(M.left, y); ctx.lineTo(w - M.right, y); ctx.stroke();
@@ -225,7 +290,7 @@ export class LineChart {
     let lastLabel = null;
     const xLabel = axis === "time" ? (v) => fmtDuration(Math.max(0, v - origin)) : fmtStep;
     const xt = axis === "time"
-      ? niceTicks(x0 - origin, x1 - origin, Math.max(2, Math.floor(pw / 90))).map((t) => t + origin)
+      ? timeTicks(x0, x1, origin, pw)
       : niceTicks(x0, x1, Math.max(2, Math.floor(pw / 70))).filter((t) => Number.isInteger(t));
     for (const t of xt) {
       const x = X(t);
@@ -258,14 +323,15 @@ export class LineChart {
           ctx.lineTo(X(s.x[i]), Y(s.min[i]));
         }
         ctx.closePath();
-        ctx.globalAlpha = 0.14;
+        ctx.globalAlpha = s.bandAlpha || 0.14;
         ctx.fillStyle = color;
         ctx.fill();
         ctx.globalAlpha = 1;
       }
       ctx.beginPath();
-      ctx.lineWidth = s.quiet ? 1 : 2;
-      ctx.globalAlpha = s.quiet ? 0.45 : 1;
+      ctx.lineWidth = s.width || (s.quiet ? 1 : 2);
+      ctx.globalAlpha = s.quiet && !s.dashed ? 0.45 : 1;
+      ctx.setLineDash(s.dashed ? [4, 4] : []);
       ctx.lineJoin = "round";
       ctx.strokeStyle = color;
       let pen = false;
@@ -275,6 +341,7 @@ export class LineChart {
         pen = true;
       }
       ctx.stroke();
+      ctx.setLineDash([]);
       ctx.globalAlpha = 1;
       if (s.x.length === 1 && s.ok(0) && !s.quiet) {
         ctx.beginPath();
@@ -317,6 +384,7 @@ export class LineChart {
     const want = x0 + ((px - M.left) / pw) * (x1 - x0);
     let best = null;
     for (const s of this.series) {
+      if (s.quiet && this.series.some((o) => !o.quiet)) continue;
       const i = nearest(s.x, want);
       if (i >= 0 && (best == null || Math.abs(s.x[i] - want) < Math.abs(best - want))) best = s.x[i];
     }
@@ -338,39 +406,144 @@ export class LineChart {
 
   readout(event) {
     const { axis, origin } = this.options;
-    const head = document.createElement("div");
-    head.className = "x";
-    head.textContent = axis === "time"
+    const head = axis === "time"
       ? `${fmtDuration(this.hoverX - origin)} in · ${new Date(this.hoverX).toLocaleTimeString()}`
       : `step ${Math.round(this.hoverX).toLocaleString()}`;
-    const rows = [head];
+    const rows = [];
     for (const s of this.plotted()) {
       const i = nearest(s.x, this.hoverX);
       if (i < 0 || s.quiet) continue;
-      const row = document.createElement("div");
-      row.className = "row";
-      const key = document.createElement("span");
-      key.className = "swatch";
-      if (s.hidden) key.style.visibility = "hidden";  // no line of its own to key to
-      key.style.background = resolveColor(this.canvas, s.color) || "";
-      const value = document.createElement("b");
-      value.textContent = this.value(s.ys[i]);
-      const name = document.createElement("span");
-      name.className = "n";
-      name.textContent = typeof s.label === "function" ? s.label(i) : s.label;
-      row.append(key, value, name);
-      rows.push(row);
+      rows.push([
+        s.hidden ? null : resolveColor(this.canvas, s.color) || cssVar(this.canvas, "--text-2"),
+        s.value ? s.value(i) : this.value(s.ys[i]),
+        typeof s.label === "function" ? s.label(i) : s.label,
+      ]);
     }
-    tooltip.replaceChildren(...rows);
-    tooltip.hidden = false;
-    const box = this.canvas.getBoundingClientRect();
-    const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
-    const cx = event ? event.clientX : box.left + (this.scale ? this.scale.X(this.hoverX) : 0);
-    const cy = event ? event.clientY : box.top + 30;
-    let left = cx + 14;
-    if (left + tw > window.innerWidth - 8) left = cx - tw - 14;
-    tooltip.style.left = `${Math.max(8, left)}px`;
-    tooltip.style.top = `${Math.max(8, Math.min(cy - th / 2, window.innerHeight - th - 8))}px`;
+    showReadout(this.canvas, event, this.scale ? this.scale.X(this.hoverX) : 0, head, rows);
+  }
+}
+
+// Many series of one kind over time, a row each: colour says how high the
+// value is (one hue, from --h0 to --h4), so twenty cores fit in one card and
+// none hides another. Rows are {label, y}, each y aligned with x.
+export class HeatChart {
+  constructor(canvas, options = {}) {
+    this.canvas = canvas;
+    this.options = { origin: 0, unit: null, lo: 0, hi: 100, ...options };
+    this.x = [];
+    this.rows = [];
+    this.hot = null;
+    this._draw = this.draw.bind(this);
+    this._ro = new ResizeObserver(() => this.schedule());
+    this._ro.observe(canvas);
+    this._theme = window.matchMedia("(prefers-color-scheme: dark)");
+    this._theme.addEventListener("change", this._draw);
+    canvas.addEventListener("pointermove", (e) => this.hover(e));
+    canvas.addEventListener("pointerleave", () => this.hover(null));
+  }
+
+  destroy() {
+    this._ro.disconnect();
+    this._theme.removeEventListener("change", this._draw);
+  }
+
+  setData(x, rows) {
+    this.x = x;
+    this.rows = rows;
+    this.schedule();
+  }
+
+  schedule() {
+    if (this._raf) return;
+    this._raf = requestAnimationFrame(() => {
+      this._raf = 0;
+      this.draw();
+    });
+  }
+
+  // 0..1 → a colour between the ramp's five stops.
+  ramp() {
+    const stops = [0, 1, 2, 3, 4].map((i) => {
+      const hex = cssVar(this.canvas, `--h${i}`);
+      return [1, 3, 5].map((o) => parseInt(hex.slice(o, o + 2), 16));
+    });
+    return (t) => {
+      const p = Math.max(0, Math.min(1, t)) * 4, i = Math.min(3, Math.floor(p)), k = p - i;
+      return `rgb(${stops[i].map((c, j) => Math.round(c + (stops[i + 1][j] - c) * k)).join(",")})`;
+    };
+  }
+
+  draw() {
+    const { ctx, w, h } = fit(this.canvas);
+    if (!w || !h) return;
+    const el = this.canvas, { x, rows } = this, { origin, lo, hi } = this.options;
+    const text = cssVar(el, "--text-3");
+    const pw = w - M.left - M.right, ph = h - M.top - M.bottom;
+    ctx.font = "11px system-ui, sans-serif";
+    this.geom = null;
+    if (!x.length || !rows.length) {
+      ctx.fillStyle = text;
+      ctx.textAlign = "center";
+      ctx.fillText("no data yet", w / 2, h / 2);
+      return;
+    }
+    let x0 = x[0], x1 = x[x.length - 1];
+    if (x0 === x1) { x0 -= 0.5; x1 += 0.5; }
+    const X = (v) => M.left + ((v - x0) / (x1 - x0)) * pw;
+    // A sample owns the time from halfway to its neighbours.
+    const edge = (i) => (i <= 0 ? M.left : i >= x.length ? M.left + pw : X((x[i - 1] + x[i]) / 2));
+    const rh = ph / rows.length, gap = rh >= 4 ? 1 : 0;
+    const color = this.ramp();
+    rows.forEach((row, r) => {
+      const top = M.top + r * rh;
+      for (let i = 0; i < x.length; i++) {
+        const v = row.y[i];
+        if (v == null) continue;
+        const left = edge(i);
+        ctx.fillStyle = color((v - lo) / (hi - lo));
+        ctx.fillRect(left, top, Math.max(1, edge(i + 1) - left + 0.5), Math.max(1, rh - gap));
+      }
+    });
+    this.geom = { edge, rh, pw, ph };
+
+    ctx.fillStyle = text;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "right";
+    const every = [1, 2, 5, 10, 20, 50, 100].find((n) => n * rh >= 13) || 100;
+    for (let r = 0; r < rows.length; r += every) ctx.fillText(rows[r].label, M.left - 6, M.top + r * rh + rh / 2);
+    ctx.textBaseline = "top";
+    ctx.textAlign = "center";
+    let last = null;
+    for (const t of timeTicks(x0, x1, origin, pw)) {
+      const px = X(t), label = fmtDuration(Math.max(0, t - origin));
+      if (px < M.left - 1 || px > w - M.right + 1 || label === last) continue;
+      last = label;
+      ctx.fillText(label, Math.min(Math.max(px, M.left + 12), w - M.right - 14), h - M.bottom + 6);
+    }
+    if (this.hot) {
+      const { r, i } = this.hot, left = edge(i);
+      ctx.strokeStyle = cssVar(el, "--text");
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(left - 0.5, M.top + r * rh - 0.5, Math.max(4, edge(i + 1) - left) + 1, Math.max(3, rh));
+    }
+  }
+
+  hover(event) {
+    if (!event || !this.geom || !this.rows.length) {
+      this.hot = null;
+      tooltip.hidden = true;
+      return this.schedule();
+    }
+    const { rh, pw } = this.geom, { x, rows } = this, { origin, lo, hi, unit } = this.options;
+    const r = Math.max(0, Math.min(rows.length - 1, Math.floor((event.offsetY - M.top) / rh)));
+    const want = x[0] + ((event.offsetX - M.left) / pw) * (x[x.length - 1] - x[0]);
+    const i = nearest(x, want), v = rows[r].y[i];
+    this.hot = { r, i };
+    this.schedule();
+    const extra = this.options.readout ? this.options.readout(i) : [];
+    showReadout(this.canvas, event, 0,
+      `${fmtDuration(x[i] - origin)} in · ${new Date(x[i]).toLocaleTimeString()}`,
+      [[v == null ? null : this.ramp()((v - lo) / (hi - lo)), v == null ? "–" : fmtUnit(unit, v), rows[r].label], ...extra]);
   }
 }
 

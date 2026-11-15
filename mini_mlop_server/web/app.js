@@ -1,6 +1,6 @@
 // mini-mlop web UI. No framework, no build step: this file is what the browser runs.
 import { initAgent, agentSettings } from "./agent.js";
-import { LineChart, drawHistogram, fmt, fmtStep, fmtDuration } from "./chart.js";
+import { LineChart, HeatChart, drawHistogram, fmt, fmtStep, fmtDuration, fmtUnit } from "./chart.js";
 import * as loading from "./loading.js";
 
 const root = document.getElementById("view");
@@ -185,6 +185,8 @@ function seriesReader(runId, axis, points) {
         recent: !entry.reread && Date.now() - entry.at < 5000,
       };
     },
+    // Appending stopped being a faithful picture of this series: read it again.
+    stale: (name) => !!(seriesHeld.get(key(name)) || {}).reread,
     async read(name, run) {
       const stamp = stampOf(run);
       const s = (await many(name)) || { x: [], y: [] };
@@ -510,6 +512,38 @@ function lazily(el, load) {
   const refresh = () => (visible ? load() : Promise.resolve());
   refresh.stop = () => io.disconnect();
   return refresh;
+}
+
+// Keeps one card supplied with the series it draws. `draw(list)` gets them in
+// the order of `names` (an empty series for one with no points) whenever
+// there is something new: the first time the card is on screen, on refresh(),
+// and on redraw() after the live stream appended points to what is held.
+function feed(reader, names, el, run, draw) {
+  const none = { x: [], y: [] };
+  let drawn = false, pending = false;
+  // Names asked for in one turn go out as one request.
+  const read = () => Promise.all(names.map((n) => reader.read(n, run()))).then(draw);
+  const refresh = lazily(el, async () => {
+    if (drawn) return read();
+    // First time on screen: draw what is already here, and only wait on
+    // the server when there is nothing. A live run catches up behind it.
+    const held = names.map((n) => reader.held(n, run()));
+    drawn = true;
+    if (!held.every(Boolean)) return read();
+    draw(held.map((e) => e.s));
+    if (!held.every((e) => e.current || e.recent)) read().catch(handleError);
+  });
+  // Drawn again from what is held, once however many names an event touched.
+  const redraw = () => {
+    if (!drawn || pending) return;
+    pending = true;
+    queueMicrotask(() => {
+      pending = false;
+      if (names.some((n) => reader.stale(n))) return refresh().catch(handleError);
+      draw(names.map((n) => (reader.held(n, run()) || { s: none }).s));
+    });
+  };
+  return { names, refresh, redraw, stop: refresh.stop };
 }
 
 // -- chart controls shared by run and compare views --------------------------
@@ -888,7 +922,7 @@ async function viewRun(id, requested) {
   // scroll positions, hover and steps picked by hand stay where they were.
   let content = { update: async () => {} };
   if (tab === "charts") content = runCharts(run, body, (n) => groupOf(n) !== "sys", "step");
-  else if (tab === "system") content = runCharts(run, body, (n) => groupOf(n) === "sys", "time");
+  else if (tab === "system") content = runSystem(run, body);
   else if (tab === "media") content = runMedia(run, body);
   else if (tab === "logs") {
     const more = coalesced(await runLogs(run, body));
@@ -918,16 +952,16 @@ async function viewRun(id, requested) {
   if (had) changed();
 }
 
-// The Charts and System tabs: a card per series, grouped by name prefix. A
-// series that shows up mid-run gets a card added; existing cards are kept.
-function runCharts(run, body, want, axis) {
+// The Charts tab, and whatever the System tab does not lay out itself: a card
+// per series, grouped by name prefix. A series that shows up mid-run gets a
+// card added; existing cards are kept.
+function runCharts(run, body, want, axis, { reader = seriesReader(run.id, axis, 600), title = null, bare = false } = {}) {
   const charts = [];
   const toolbar = chartToolbar(charts);
   const sections = h("div");
   const empty = h("div");
   put(body, toolbar, sections, empty);
   const cards = new Set();
-  const reader = seriesReader(run.id, axis, 600);
   const byName = new Map();
   let now = run;  // the run as of the latest poll
 
@@ -973,33 +1007,9 @@ function runCharts(run, body, want, axis) {
         if (!list.some((s) => s.x.length)) return card.chart.setData([]);
         return members.length <= TELL_APART ? drawFew(list) : drawMany(list);
       };
-      let drawn = false;
-      // Members asked for in one turn go out as one request.
-      const read = () => Promise.all(members.map((m) => reader.read(m.name, now))).then(draw);
-      const refresh = lazily(card.el, async () => {
-        if (drawn) return read();
-        // First time on screen: draw what is already here, and only wait on
-        // the server when there is nothing. A live run catches up behind it.
-        const held = members.map((m) => reader.held(m.name, now));
-        drawn = true;
-        if (!held.every(Boolean)) return read();
-        draw(held.map((e) => e.s));
-        if (!held.every((e) => e.current || e.recent)) read().catch(handleError);
-      });
-      // Points that arrived for one member: the whole card is drawn again
-      // from what is held, once however many members the event touched.
-      let pending = false;
-      const redraw = () => {
-        if (!drawn || pending) return;
-        pending = true;
-        queueMicrotask(() => {
-          pending = false;
-          const held = members.map((m) => reader.held(m.name, now));
-          if (held.every(Boolean)) draw(held.map((e) => e.s));
-        });
-      };
-      part = { el: card.el, refresh, redraw, names: members.map((m) => m.name),
-        destroy() { refresh.stop(); card.chart.destroy(); charts.splice(charts.indexOf(card.chart), 1); } };
+      const supply = feed(reader, members.map((m) => m.name), card.el, () => now, draw);
+      part = { el: card.el, refresh: supply.refresh, redraw: supply.redraw, names: supply.names,
+        destroy() { supply.stop(); card.chart.destroy(); charts.splice(charts.indexOf(card.chart), 1); } };
     } else {
       const card = dataCard(() => now, series);
       const refresh = lazily(card.el, card.load);
@@ -1018,7 +1028,7 @@ function runCharts(run, body, want, axis) {
   };
   const makeSection = ([group]) => {
     const grid = h("div", { class: "grid" });
-    return { el: h("div", {}, h("h2", {}, group || "Metrics"), grid),
+    return { el: h("div", {}, h("h2", {}, title || group || "Metrics"), grid),
       update: ([, list]) => reconcile(grid, list, (s) => s.key || s.name, makeCard) };
   };
   // What the live stream says about this run's series.
@@ -1046,7 +1056,7 @@ function runCharts(run, body, want, axis) {
     const byName = new Map(all.map((s) => [s.name, s]));
     const groups = byGroup(all.map((s) => s.name)).map(([g, names]) => [g, names.map((n) => byName.get(n))]);
     toolbar.hidden = !metrics.length;
-    if (all.length) put(empty);
+    if (all.length || bare) put(empty);
     else put(empty, emptyState(run.status === "RUNNING" ? "Waiting for the first metrics…" : "This run did not log any metrics."));
     reconcile(sections, groups, ([g]) => g, makeSection);
   };
@@ -1056,6 +1066,334 @@ function runCharts(run, body, want, axis) {
     update(run, live) {
       paint(run);
       return live ? Promise.all([...cards].map((c) => c.refresh())) : null;
+    },
+  };
+}
+
+// -- the System tab --------------------------------------------------------
+// What the logger records about the machine, by name. Anything under sys/
+// that is not listed here keeps its plain card, in a section of its own.
+function systemLayout(run) {
+  const names = run.series.filter((s) => s.kind === "METRIC" && groupOf(s.name) === "sys").map((s) => s.name);
+  const has = (n) => (names.includes(n) ? n : null);
+  const cores = names.map((n) => /^sys\/cpu\.(?:percentage|pct)\.(\d+)$/.exec(n)).filter(Boolean)
+    .map((m) => ({ name: m[0], n: +m[1] })).sort((a, b) => a.n - b.n);
+  const gpus = new Map();
+  for (const n of names) {
+    const m = /^sys\/gpu\.nvda\.(.+?)\.(memory\.percentage|memory\.used|percentage|power|temp)$/.exec(n);
+    if (!m) continue;
+    if (!gpus.has(m[1])) gpus.set(m[1], { key: m[1], series: {} });
+    gpus.get(m[1]).series[m[2]] = n;
+  }
+  // The machine details name each device and say how much memory it has.
+  const devices = (((run.system || {}).gpu || {}).nvidia || {}).devices || [];
+  const slug = (d) => String(d.name).toLowerCase().replace(/ /g, "_");
+  for (const gpu of gpus.values()) {
+    const numbered = /^(.*)\.(\d+)$/.exec(gpu.key);
+    const d = devices.find((d) => slug(d) === gpu.key) || (numbered && devices[+numbered[2]]) || null;
+    gpu.label = d ? d.name + (numbered ? ` #${numbered[2]}` : "") : gpu.key;
+    gpu.total = d && d.memory ? d.memory.total : null;
+  }
+  const layout = {
+    gpus: [...gpus.values()].sort((a, b) => a.key.localeCompare(b.key)),
+    cores,
+    memory: { used: has("sys/memory.used"), active: has("sys/memory.active") },
+    network: { received: has("sys/network.bytes.received"), sent: has("sys/network.bytes.sent") },
+    disk: { used: has("sys/disk.used"), free: has("sys/disk.free") },
+  };
+  // Memory and disk are drawn from what is in use; without it, their other
+  // series stay plain cards.
+  if (!layout.memory.used) layout.memory.active = null;
+  if (!layout.disk.used) layout.disk.free = null;
+  layout.claimed = new Set([...cores.map((c) => c.name), ...Object.values(layout.memory),
+    ...Object.values(layout.network), ...Object.values(layout.disk),
+    ...layout.gpus.flatMap((g) => Object.values(g.series))].filter(Boolean));
+  return layout;
+}
+
+// Point by point across a set of series sampled together: the median, the
+// 10th and 90th percentile, and the highest with which member that was.
+function across(list, members) {
+  const base = list.reduce((a, b) => (b.x.length > a.x.length ? b : a));
+  const n = base.x.length, out = { x: base.x, rows: list.map(() => new Array(n)) };
+  for (const k of ["med", "p10", "p90", "hi", "hiAt"]) out[k] = new Array(n);
+  const at = (s, x) => {  // index of the point of s nearest x
+    let a = 0, b = s.x.length - 1;
+    while (b - a > 1) { const m = (a + b) >> 1; if (s.x[m] < x) a = m; else b = m; }
+    return Math.abs(s.x[a] - x) <= Math.abs(s.x[b] - x) ? a : b;
+  };
+  const q = (sorted, p) => {
+    const i = (sorted.length - 1) * p, lo = Math.floor(i);
+    return sorted[lo] + (sorted[Math.ceil(i)] - sorted[lo]) * (i - lo);
+  };
+  for (let i = 0; i < n; i++) {
+    const vals = [];
+    out.hi[i] = -Infinity;
+    list.forEach((s, j) => {
+      if (!s.x.length) return void (out.rows[j][i] = null);
+      const v = s.y[s.x.length === n ? i : at(s, base.x[i])];
+      out.rows[j][i] = v;
+      vals.push(v);
+      if (v > out.hi[i]) { out.hi[i] = v; out.hiAt[i] = members[j].n; }
+    });
+    vals.sort((a, b) => a - b);
+    out.med[i] = q(vals, 0.5); out.p10[i] = q(vals, 0.1); out.p90[i] = q(vals, 0.9);
+  }
+  return out;
+}
+
+// A running total (bytes sent since boot) as a rate per second.
+function perSecond(s) {
+  const x = [], y = [];
+  for (let i = 1; i < s.x.length; i++) {
+    const dt = (s.x[i] - s.x[i - 1]) / 1000;
+    if (dt <= 0) continue;
+    x.push(s.x[i]);
+    y.push(Math.max(0, s.y[i] - s.y[i - 1]) / dt);  // a counter that restarted is not a negative rate
+  }
+  return { x, y };
+}
+
+const last = (a) => a[a.length - 1];
+const swatch = (color, text, box) =>
+  h("span", {}, h("span", { class: box ? "swatch box" : "swatch", style: `background: var(${color})` }), text);
+const SUMMARY = "M1.5 11 5 6.5l3 2.5 3-5 3.5 3", ROWS = "M2 4h12M2 8h12M2 12h12";
+
+function runSystem(run, body) {
+  const reader = seriesReader(run.id, "time", 600);
+  const mount = h("div", { class: "devices" }), rest = h("div");
+  put(body, mount, rest);
+  let now = run, layout = null, parts = [], built = null;
+  const others = runCharts(run, rest, (n) => groupOf(n) === "sys" && !(layout && layout.claimed.has(n)), "time",
+    { reader, title: "Other", bare: true });
+  const origin = run.created_at;
+
+  const plot = (options, about) => {
+    const canvas = h("canvas", { tabindex: "0", role: "img", "aria-label": about });
+    const chart = new LineChart(canvas, { axis: "time", origin, zero: true, ...options });
+    onLeave(() => chart.destroy());
+    return { canvas, chart };
+  };
+  const card = (title, head, ...kids) => h("div", { class: "card chart" },
+    h("header", { class: "cardhead" }, h("span", { class: "title", title }, title), h("span", { class: "grow" }), head), ...kids);
+  // Puts a card on the tab and keeps it supplied with its series.
+  const add = (el, names, draw, charts) => {
+    const supply = feed(reader, names, el, () => now, draw);
+    parts.push({ ...supply, destroy() { supply.stop(); charts.forEach((c) => c.destroy()); } });
+    return el;
+  };
+  // A dashed line across the chart at what is installed.
+  const ceiling = (s, total) => ({ quiet: true, dashed: true, x: [s.x[0], last(s.x)], y: [total, total] });
+
+  const gpuCards = (gpu) => {
+    const of = gpu.series, out = [h("h2", {}, "GPU", h("span", { class: "sub" }, gpu.label))];
+    const util = [of.percentage, of["memory.percentage"]].filter(Boolean);
+    if (util.length) {
+      const p = plot({ unit: "percent", yMin: 0, yMax: 100 }, "GPU utilisation over time");
+      const latest = h("span", { class: "latest num" });
+      const names = { [of.percentage]: "GPU", [of["memory.percentage"]]: "memory controller" };
+      out.push(add(card("Utilisation", latest, p.canvas,
+        util.length > 1 ? h("div", { class: "legend" }, ...util.map((n, i) => swatch(SERIES[i], names[n]))) : null),
+      util, (list) => {
+        p.chart.setData(list.map((s, i) => ({ label: names[util[i]], color: SERIES[i], x: s.x, y: s.y })));
+        setText(latest, list[0].y.length ? fmtUnit("percent", last(list[0].y)) : "");
+      }, [p.chart]));
+    }
+    if (of["memory.used"]) {
+      const p = plot({ unit: "bytes" }, "GPU memory in use over time"), latest = h("span", { class: "latest num" });
+      // A device with unified memory has no pool of its own: what is logged
+      // is what the processes on it hold.
+      out.push(add(card(gpu.total ? "Memory" : "Memory held by processes", latest, p.canvas,
+        gpu.total ? h("div", { class: "legend" }, swatch("--s1", "used"), swatch("--text-3", `installed, ${bytes(gpu.total)}`)) : null),
+      [of["memory.used"]], ([s]) => {
+        const series = [{ label: "used", color: SERIES[0], x: s.x, y: s.y }];
+        if (gpu.total && s.x.length) series.push(ceiling(s, gpu.total));
+        p.chart.setData(series);
+        setText(latest, !s.y.length ? "" : gpu.total ? `${bytes(last(s.y))} of ${bytes(gpu.total)}` : fmtUnit("bytes", last(s.y)));
+      }, [p.chart]));
+    }
+    // Watts and degrees share a slot but never an axis. Power is logged in milliwatts.
+    const small = [[of.power, "Power", "watts", 1 / 1000], [of.temp, "Temperature", "celsius", 1]].filter(([n]) => n);
+    if (small.length) {
+      const two = small.length > 1, head = two ? null : h("span", { class: "latest num" });
+      const rows = small.map(([, title, unit]) => {
+        const p = plot({ unit, ticks: two ? 2 : 4 }, `GPU ${title.toLowerCase()} over time`), latest = h("b", {});
+        return { ...p, latest, el: h("div", {}, two ? h("div", { class: "k" }, h("span", {}, title), latest) : null, p.canvas) };
+      });
+      out.push(add(card(two ? "Power and temperature" : small[0][1], head,
+        two ? h("div", { class: "pair" }, ...rows.map((r) => r.el)) : rows[0].el),
+      small.map(([n]) => n), (list) => list.forEach((s, i) => {
+        const [, title, unit, scale] = small[i], y = s.y.map((v) => v * scale);
+        rows[i].chart.setData([{ label: title.toLowerCase(), color: SERIES[0], x: s.x, y }]);
+        setText(head || rows[i].latest, y.length ? fmtUnit(unit, last(y)) : "");
+      }), rows.map((r) => r.chart)));
+    }
+    return out;
+  };
+
+  // Two views of the same cores: how the load is spread, or every core.
+  const cpuCard = () => {
+    const members = layout.cores;
+    const p = plot({ unit: "percent", yMin: 0, yMax: 100 }, "CPU utilisation across cores over time");
+    const each = h("canvas", { role: "img", "aria-label": "Utilisation of each core over time" });
+    let data = null;
+    const heat = new HeatChart(each, { origin, unit: "percent",
+      readout: (i) => (data ? [[null, fmtUnit("percent", data.med[i]), "median core"]] : []) });
+    onLeave(() => heat.destroy());
+    const legend = h("div", { class: "legend" });
+    const KEY = "mini-mlop.cores";
+    let cores = false;
+    try { cores = localStorage.getItem(KEY) === "1"; } catch { /* private mode: this page only */ }
+    const paint = () => {
+      control.dataset.on = cores ? "1" : "0";
+      buttons.forEach((b, i) => b.setAttribute("aria-pressed", String(!!i === cores)));
+      p.canvas.hidden = cores;
+      each.hidden = !cores;
+      put(legend, ...(cores
+        ? [h("span", {}, "0%", h("span", { class: "ramp" }), "100%"), h("span", {}, "a row per core")]
+        : [swatch("--s1", "median core"), swatch("--h1", "middle 80%", true), swatch("--text-3", "busiest core")]));
+      (cores ? heat : p.chart).schedule();
+    };
+    const show = (on) => {
+      cores = on;
+      try { localStorage.setItem(KEY, on ? "1" : "0"); } catch { /* as above */ }
+      paint();
+    };
+    const buttons = [["Summary", SUMMARY], ["Each core", ROWS]].map(([text, d], i) =>
+      h("button", { type: "button", onclick: () => show(!!i) }, icon(d), text));
+    const control = h("div", { class: "switch", role: "group", "aria-label": "CPU view" }, ...buttons);
+    const draw = (list) => {
+      if (!list.some((s) => s.x.length)) { data = null; p.chart.setData([]); return heat.setData([], []); }
+      const all = (data = across(list, members)), value = (v) => fmtUnit("percent", v);
+      p.chart.setData([
+        { label: "median core", color: SERIES[0], x: all.x, y: all.med, min: all.p10, max: all.p90, bandAlpha: 0.22 },
+        { hidden: true, label: "middle 80%", x: all.x, y: all.p90, value: (i) => `${value(all.p10[i])} to ${value(all.p90[i])}` },
+        { label: (i) => `busiest (#${all.hiAt[i]})`, color: "--text-3", width: 1.25, x: all.x, y: all.hi },
+      ]);
+      heat.setData(all.x, members.map((m, j) => ({ label: `#${m.n}`, y: all.rows[j] })));
+    };
+    const el = h("div", { class: "card chart" },
+      h("header", { class: "cardhead" }, h("span", { class: "title" }, "CPU"), control), p.canvas, each, legend);
+    paint();
+    return add(el, members.map((m) => m.name), draw, [p.chart, heat]);
+  };
+
+  const memoryCard = () => {
+    const names = [layout.memory.used, layout.memory.active].filter(Boolean);
+    const labels = { [layout.memory.used]: "used", [layout.memory.active]: "active" };
+    const total = ((now.system || {}).memory || {}).virt || null;
+    const p = plot({ unit: "bytes" }, "Memory in use over time"), latest = h("span", { class: "latest num" });
+    return add(card("Memory", latest, p.canvas, h("div", { class: "legend" },
+      ...names.map((n, i) => swatch(SERIES[i], labels[n])), total ? swatch("--text-3", `installed, ${bytes(total)}`) : null)),
+    names, (list) => {
+      const series = list.map((s, i) => ({ label: labels[names[i]], color: SERIES[i], x: s.x, y: s.y }));
+      const s = list[0];
+      if (total && s.x.length) series.push(ceiling(s, total));
+      p.chart.setData(series);
+      setText(latest, !s.y.length ? "" : total ? `${bytes(last(s.y))} of ${bytes(total)}` : bytes(last(s.y)));
+    }, [p.chart]);
+  };
+
+  const networkCard = () => {
+    const names = [layout.network.received, layout.network.sent].filter(Boolean);
+    const labels = { [layout.network.received]: "received", [layout.network.sent]: "sent" };
+    const arrows = { [layout.network.received]: "↓", [layout.network.sent]: "↑" };
+    const p = plot({ unit: "rate" }, "Network traffic per second over time"), latest = h("span", { class: "latest num" });
+    return add(card("Network", latest, p.canvas, h("div", { class: "legend" },
+      ...names.map((n, i) => swatch(SERIES[i], labels[n])), h("span", {}, "per second"))),
+    names, (list) => {
+      const rates = list.map(perSecond);
+      p.chart.setData(rates.map((s, i) => ({ label: labels[names[i]], color: SERIES[i], x: s.x, y: s.y })));
+      setText(latest, rates.map((s, i) => (s.y.length ? `${arrows[names[i]]} ${fmtUnit("rate", last(s.y))}` : null)).filter(Boolean).join(" · "));
+    }, [p.chart]);
+  };
+
+  // Disk space barely moves, so a line from zero to capacity says nothing.
+  // What matters is whether it is about to run out and how fast it has been
+  // filling since the run began (by this run or anything else writing to the
+  // volume): where the space stands on the left, the growth on the right.
+  const diskCard = () => {
+    const names = [layout.disk.used, layout.disk.free].filter(Boolean);
+    const total = ((now.system || {}).volume || {}).total || null;
+    const p = plot({ unit: "bytes", ticks: 2 }, "Disk space written since this run started, over time");
+    const big = h("div", { class: "big" }), meter = h("div", { class: "meter", role: "img" });
+    const legend = h("div", { class: "legend" }), pace = h("div", { class: "pace" }), wrote = h("b", {});
+    const stand = h("div", { class: "stand" }, big, meter, legend, pace);
+    const grid = h("div", { class: "disk" }, stand,
+      h("div", {}, h("div", { class: "k" }, h("span", {}, "Written since this run started"), wrote), p.canvas));
+    const el = h("div", { class: "card chart span" },
+      h("header", { class: "cardhead" }, h("span", { class: "title" }, "Disk"),
+        h("span", { class: "sub" }, "the volume this run writes to")), grid);
+    return add(el, names, (list) => {
+      const used = list[0], freeNow = list[1] && list[1].y.length ? last(list[1].y) : null;
+      if (!used.y.length) return p.chart.setData([]);
+      const before = used.y[0], added = last(used.y) - before;
+      const free = freeNow != null ? freeNow : total ? total - last(used.y) : null;
+      const grown = used.y.map((v) => v - before);
+      p.chart.setData([{ label: "written since the start", color: SERIES[0], x: used.x, y: grown,
+        min: grown.map((v) => Math.min(0, v)), max: grown.map((v) => Math.max(0, v)), bandAlpha: 0.2 }]);
+      setText(wrote, `${added < 0 ? "−" : "+"}${bytes(Math.abs(added))}`);
+      // Runs logged before the logger sent free space have only the chart.
+      stand.hidden = free == null;
+      grid.classList.toggle("alone", free == null);
+      if (free == null) return;
+      const ours = Math.max(0, added);
+      put(big, `${bytes(free)} free `, h("small", {}, `of ${bytes(total || before + ours + free)}`));
+      put(meter, h("i", { class: "before", style: `flex: ${before}` }),
+        ours ? h("i", { class: "ours", style: `flex: ${ours}` }) : null, h("i", { class: "free", style: `flex: ${free}` }));
+      meter.setAttribute("aria-label", `${bytes(before)} used before this run, ${bytes(ours)} added since it started, ${bytes(free)} free`);
+      put(legend, swatch("--before", `before this run, ${bytes(before)}`, true),
+        swatch("--s1", `since this run started, +${bytes(ours)}`, true), swatch("--grid", `free, ${bytes(free)}`, true));
+      // When the volume fills at the pace so far; said only while it matters.
+      const elapsed = last(used.x) - used.x[0];
+      const left = added > 0 && elapsed > 0 ? (free / added) * elapsed : Infinity;
+      const telling = now.status === "RUNNING" && left < 30 * 86400e3;
+      const about = left < 3600e3 ? `${Math.max(1, Math.round(left / 60e3))} min`
+        : left < 48 * 3600e3 ? `${Math.round(left / 3600e3)} h` : `${Math.round(left / 86400e3)} days`;
+      setText(pace, telling ? `Full in about ${about} at this pace.` : "");
+      pace.classList.toggle("soon", telling && left < 2 * 3600e3);
+    }, [p.chart]);
+  };
+
+  const build = () => {
+    parts.forEach((p) => p.destroy());
+    parts = [];
+    const kids = layout.gpus.flatMap(gpuCards);
+    const machine = [];
+    if (layout.cores.length) machine.push(cpuCard());
+    if (layout.memory.used) machine.push(memoryCard());
+    if (layout.network.received || layout.network.sent) machine.push(networkCard());
+    if (machine.length) {
+      const sys = now.system || {}, facts = [];
+      if (layout.cores.length) facts.push(`${layout.cores.length} cores`);
+      if ((sys.memory || {}).virt) facts.push(`${bytes(sys.memory.virt)} memory`);
+      kids.push(h("h2", {}, "Machine", h("span", { class: "sub" }, facts.join(", "))), ...machine);
+    }
+    if (layout.disk.used) kids.push(diskCard());
+    if (!kids.length && !now.series.some((s) => s.kind === "METRIC" && groupOf(s.name) === "sys")) {
+      kids.push(h("div", { class: "span" }, emptyState(now.status === "RUNNING"
+        ? "Waiting for the first system metrics…" : "This run did not log any system metrics.")));
+    }
+    put(mount, ...kids);
+  };
+  const paint = (run) => {
+    now = run;
+    layout = systemLayout(run);
+    const key = [...layout.claimed].sort().join("|") || `none:${run.status}`;
+    if (key !== built) { built = key; build(); }
+  };
+  paint(run);
+  others.update(run, false);  // it was laid out before this knew which series are its own
+  return {
+    event(ev) {
+      others.event(ev);  // appends the new points to what is held, for every series
+      if (ev.type !== "metrics") return;
+      for (const part of parts) if (part.names.some((n) => n in ev.points)) part.redraw();
+    },
+    update(run, live) {
+      paint(run);
+      const rest = others.update(run, live);
+      return live ? Promise.all([rest, ...parts.map((p) => p.refresh())]) : rest;
     },
   };
 }

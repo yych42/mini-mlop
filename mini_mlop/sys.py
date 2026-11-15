@@ -41,6 +41,17 @@ def _nvml_processes(handle) -> list:
     )
 
 
+def _volume_total(path: str) -> Optional[int]:
+    """Size of the volume `path` is on, or will be once it is created."""
+    path = os.path.abspath(path)
+    while not os.path.exists(path) and os.path.dirname(path) != path:
+        path = os.path.dirname(path)
+    try:
+        return psutil.disk_usage(path).total
+    except OSError:
+        return None
+
+
 class System:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -208,6 +219,8 @@ class System:
                 "virt": self.svmem["total"],
                 "swap": self.sswap["total"],
             },
+            # the volume the run writes to: what sys/disk.used and .free measure
+            "volume": {"total": _volume_total(self.settings.dir)},
             "boot_time": self.boot_time,
             "requirements": self.requirements,
         }
@@ -244,7 +257,7 @@ class System:
             **{
                 f"{p}/disk.{k}": v
                 for k, v in psutil.disk_usage(self.settings.get_dir())._asdict().items()
-                if k in ("used",)
+                if k in ("used", "free")
             },
             **{
                 f"{p}/net.{k}": v
