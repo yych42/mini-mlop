@@ -169,8 +169,13 @@ td.clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-spa
    slack), numbers sit right in tabular figures, text sits left on one line
    and is cut with an ellipsis; peek shows the rest. Header row and row labels
    stay put while the body scrolls. */
-.datatable { max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: 6px;
-             font-size: 12.5px; }
+/* No box of its own: the card is the container. Rows run to the card's edges
+   (the negative margin undoes the card's 14px side padding) and the first
+   column starts where the card's title does. */
+.datatable { max-height: 300px; overflow: auto; margin: 0 -14px; font-size: 12.5px;
+             border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.datatable tr > :first-child { padding-left: 14px; }
+.datatable tr > :nth-last-child(2) { padding-right: 14px; }
 .wide .datatable { max-height: 70vh; }
 .datatable table { width: 100%; }
 .datatable th, .datatable td { padding: 5px 10px; white-space: nowrap; vertical-align: top;
