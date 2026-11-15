@@ -20,7 +20,7 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from . import __version__, agent, llm, mcp
+from . import __version__, agent, live, llm, mcp
 from .query import QueryError, describe as describe_query
 from .store import ACCESS, Invalid, NotFound, Store
 
@@ -279,6 +279,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def run(self, raw):
         return self.check_run(_int_path(raw))
+
+    def tell(self, run_id, type, **fields):
+        """Publish a live event about a run to the pages watching it."""
+        hub = self.server.hub
+        project = self.store.run_project(run_id)
+        if hub.watched(run_id, project):
+            hub.publish(run_id, project, type, **fields)
+
+    def watched(self, run_id):
+        return self.server.hub.watched(run_id, self.store.run_project(run_id))
 
     def base_url(self):
         cfg = self.server.config
@@ -715,6 +725,7 @@ def runs_create(h):
         system=b.get("systemMetadata"),
         settings=b.get("loggerSettings"),
     )
+    h.tell(run_id, "run")
     h.send_json(
         {
             "runId": run_id,
@@ -728,14 +739,18 @@ def runs_create(h):
 @route("POST", "/api/runs/status/update", need="write")
 def runs_status(h):
     b = h.read_json()
-    h.store.set_status(h.run_id(b), b.get("status"), b.get("statusMetadata"))
+    run_id = h.run_id(b)
+    h.store.set_status(run_id, b.get("status"), b.get("statusMetadata"))
+    h.tell(run_id, "run")
     h.send_json({"success": True})
 
 
 @route("POST", "/api/runs/logName/add", need="write")
 def runs_log_name(h):
     b = h.read_json()
-    h.store.declare_series(h.run_id(b), b.get("logName"), b.get("logType"))
+    run_id = h.run_id(b)
+    h.store.declare_series(run_id, b.get("logName"), b.get("logType"))
+    h.tell(run_id, "run")
     h.send_json({"success": True})
 
 
@@ -744,7 +759,9 @@ def runs_graph(h):
     b = h.read_json()
     if not isinstance(b.get("graph"), dict):
         raise HTTPError(400, "graph must be an object")
-    h.store.set_graph(h.run_id(b), b["graph"])
+    run_id = h.run_id(b)
+    h.store.set_graph(run_id, b["graph"])
+    h.tell(run_id, "run")
     h.send_json({"success": True})
 
 
@@ -759,31 +776,99 @@ def runs_alert(h):
     b = h.read_json()
     if not isinstance(b.get("alert"), dict):
         raise HTTPError(400, "alert must be an object")
-    h.store.add_alert(h.run_id(b), b["alert"])
+    run_id = h.run_id(b)
+    h.store.add_alert(run_id, b["alert"])
+    h.tell(run_id, "run")
     h.send_json({"success": True})
+
+
+def _watching(h, run_id, lines, note):
+    """Pass `lines` through to the store, showing each to `note` on the way,
+    so that what was just stored can be told to the pages watching the run.
+    `note` sees a line before the store does, and must not trust its shape."""
+    for line in lines:
+        if isinstance(line, dict):
+            note(line)
+        yield line
 
 
 @route("POST", "/ingest/metrics", need="write")
 def ingest_metrics(h):
-    h.send_json({"ingested": h.store.ingest_metrics(h.run_id(), h.iter_json_lines())})
+    run_id = h.run_id()
+    if not h.watched(run_id):
+        return h.send_json({"ingested": h.store.ingest_metrics(run_id, h.iter_json_lines())})
+    points, count, fresh = {}, 0, False
+
+    def note(line):
+        nonlocal count, fresh
+        data = line.get("data")
+        try:
+            step, t = int(line.get("step")), int(line.get("time"))
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        for name, value in data.items():
+            # The same filter the store applies: plottable numbers only.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            if value != value or value in (float("inf"), float("-inf")):
+                continue
+            if name not in points:
+                fresh = fresh or not h.store.knows_series(run_id, name)
+                points[name] = []
+            if count < live.MAX_POINTS:
+                points[name].append([step, t, value])
+            count += 1
+
+    ingested = h.store.ingest_metrics(run_id, _watching(h, run_id, h.iter_json_lines(), note))
+    if fresh:
+        h.tell(run_id, "run")  # a series the page has no card for yet
+    if count > live.MAX_POINTS:
+        h.tell(run_id, "resync")
+    elif points:
+        h.tell(run_id, "metrics", points=points)
+    h.send_json({"ingested": ingested})
 
 
 @route("POST", "/ingest/data", need="write")
 def ingest_data(h):
-    h.send_json({"ingested": h.store.ingest_data(h.run_id(), h.iter_json_lines())})
+    run_id = h.run_id()
+    names, fresh = set(), False
+
+    def note(line):
+        nonlocal fresh
+        name = line.get("logName")
+        if isinstance(name, str) and name not in names:
+            fresh = fresh or not h.store.knows_series(run_id, name)
+            names.add(name)
+
+    ingested = h.store.ingest_data(run_id, _watching(h, run_id, h.iter_json_lines(), note))
+    if fresh:
+        h.tell(run_id, "run")
+    if names:
+        h.tell(run_id, "data", names=sorted(names))
+    h.send_json({"ingested": ingested})
 
 
 @route("POST", "/ingest/logs", need="write")
 def ingest_logs(h):
-    h.send_json({"ingested": h.store.ingest_logs(h.run_id(), h.iter_json_lines())})
+    run_id = h.run_id()
+    ingested = h.store.ingest_logs(run_id, h.iter_json_lines())
+    if ingested:
+        h.tell(run_id, "logs")
+    h.send_json({"ingested": ingested})
 
 
 @route("POST", "/files", need="write")
 def files_register(h):
     b = h.read_json()
     out = {}
-    for log_name, file_name, fid in h.store.register_files(h.run_id(), b.get("files")):
+    run_id = h.run_id()
+    for log_name, file_name, fid in h.store.register_files(run_id, b.get("files")):
         out.setdefault(log_name, []).append({file_name: f"/api/files/{fid}"})
+    if out:
+        h.tell(run_id, "run")  # a media series may be new
     h.send_json(out)
 
 
@@ -793,8 +878,9 @@ def files_upload(h, file_id):
         fid = int(file_id)
     except ValueError:
         raise HTTPError(404, "file not found")
-    h.check_run(h.store.get_file(fid)["run_id"])
+    run_id = h.check_run(h.store.get_file(fid)["run_id"])
     size = h.store.save_file(fid, h.iter_body(h.server.config.max_upload))
+    h.tell(run_id, "files")
     h.send_json({"size": size})
 
 
@@ -846,13 +932,18 @@ def run_get(h, run_id):
 
 @route("DELETE", "/api/runs/<run_id>", need="write")
 def run_delete(h, run_id):
-    h.store.delete_run(h.run(run_id))
+    run_id = h.run(run_id)
+    project = h.store.run_project(run_id)
+    h.store.delete_run(run_id)
+    h.server.hub.publish(run_id, project, "run")
     h.send_json({"ok": True})
 
 
 @route("POST", "/api/runs/<run_id>/stop", need="write")
 def run_stop(h, run_id):
-    h.store.cancel_run(h.run(run_id))
+    run_id = h.run(run_id)
+    h.store.cancel_run(run_id)
+    h.tell(run_id, "run")
     h.send_json({"ok": True})
 
 
@@ -907,6 +998,36 @@ def run_logs(h, run_id):
             )
         }
     )
+
+
+@route("GET", "/api/events")
+def events(h):
+    """Server-sent events for one run (?run=<id>) or every run of a project
+    (?project=<name>). See live.py for what is sent. The response stays open;
+    a comment line every 15 s keeps proxies from closing it and lets a
+    vanished reader be noticed."""
+    hub = h.server.hub
+    if h.arg("run") is not None:
+        sub = hub.subscribe(run=h.run(h.arg("run")))
+    elif h.arg("project") is not None:
+        sub = hub.subscribe(project=h.check_project(h.arg("project")))
+    else:
+        raise HTTPError(400, "pass run=<id> or project=<name>")
+    try:
+        h.start_stream("text/event-stream")
+        h.wfile.write(b"retry: 2000\n\n")
+        h.wfile.flush()
+        while not hub.closed:
+            event = sub.get(timeout=15)
+            if event is None:
+                h.wfile.write(b": still here\n\n")
+            elif event["type"] == "close":
+                break
+            else:
+                h.wfile.write(b"data: " + json.dumps(event, separators=(",", ":")).encode() + b"\n\n")
+            h.wfile.flush()
+    finally:
+        hub.unsubscribe(sub)
 
 
 @route("GET", "/api/runs/<run_id>/graph")
@@ -1170,6 +1291,7 @@ class Server(ThreadingHTTPServer):
         self.store = store or Store(config.data_dir, secret=config.secret)
         agent.encrypt_stored_secrets(self.store)
         self.static = Static(WEB_DIR)
+        self.hub = live.Hub()
         self._stop = threading.Event()
         self.agent_slots = threading.BoundedSemaphore(2)  # agent turns at once
         if ":" in config.host:
@@ -1191,6 +1313,7 @@ class Server(ThreadingHTTPServer):
 
     def close(self):
         self._stop.set()
+        self.hub.close()
         self.server_close()
         self.store.close()
 

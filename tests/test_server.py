@@ -414,6 +414,70 @@ def test_web_ui_is_served(server):
     assert anon.get("/%2e%2e/store.py", raw=True)[0] == 404
 
 
+def test_events_stream_what_a_run_logs(server, api):
+    import socket
+    import time
+    from urllib.parse import urlsplit
+
+    run_id = api.new_run(project="live", name="r1")
+    other = api.new_run(project="elsewhere", name="r2")
+
+    def listen(query, key=None):
+        host, port = urlsplit(server.url).netloc.split(":")
+        sock = socket.create_connection((host, int(port)), timeout=5)
+        sock.sendall(f"GET /api/events?{query} HTTP/1.1\r\nHost: x\r\n"
+                     f"Authorization: Bearer {key or server.key}\r\n\r\n".encode())
+        f = sock.makefile("rb")
+        status = f.readline()
+        while f.readline() not in (b"\r\n", b""):
+            pass
+        return sock, f, int(status.split()[1])
+
+    def events(f, n):
+        out = []
+        while len(out) < n:
+            line = f.readline()
+            assert line, "stream closed early"
+            if line.startswith(b"data: "):
+                out.append(json.loads(line[6:]))
+        return out
+
+    sock, f, status = listen(f"run={run_id}")
+    assert status == 200
+    psock, pf, _ = listen("project=live")
+    time.sleep(0.2)  # let both subscribe
+
+    # A first metric is a new series (the run changed) and its points.
+    api.ingest("metrics", run_id, [{"time": 5, "step": 1, "data": {"loss": 0.5, "note": "text", "bad": float("nan")}}])
+    api.ingest("metrics", other, [{"time": 5, "step": 1, "data": {"loss": 9}}])  # not ours
+    api.ingest("metrics", run_id, [{"time": 6, "step": 2, "data": {"loss": 0.25}}])
+    got = events(f, 3)
+    assert [e["type"] for e in got] == ["run", "metrics", "metrics"]
+    assert got[1] == {"type": "metrics", "run": run_id, "points": {"loss": [[1, 5, 0.5]]}}
+    assert got[2]["points"] == {"loss": [[2, 6, 0.25]]}  # a known series: no "run" this time
+    assert [e["type"] for e in events(pf, 3)] == ["run", "metrics", "metrics"]
+
+    api.ingest("data", run_id, [{"time": 1, "step": 1, "logName": "t", "dataType": "TABLE",
+                                 "data": json.dumps({"table": [[1]]})}])
+    api.ingest("logs", run_id, [{"time": 1, "message": "hi", "lineNumber": 1, "logType": "INFO"}])
+    api.post("/api/runs/status/update", {"runId": run_id, "status": "COMPLETED"})
+    types = [e["type"] for e in events(f, 4)]
+    assert types == ["run", "data", "logs", "run"]
+
+    # The project stream hears about new runs; streams end when the reader goes.
+    api.new_run(project="live", name="r3")
+    assert [e["type"] for e in events(pf, 5)][-1] == "run"
+    sock.close()
+    psock.close()
+
+    # Access is the API's: no key, no stream; a project key only its project.
+    assert listen(f"run={run_id}", key="nope")[2] == 401
+    _, made = api.post("/api/keys", {"name": "k", "access": "read", "project": "elsewhere"})
+    assert listen(f"run={run_id}", key=made["key"])[2] == 404
+    assert listen("project=live", key=made["key"])[2] == 404
+    assert listen("", key=made["key"])[2] == 400
+
+
 def test_page_carries_the_data_its_view_asks_for(server, api):
     import re
 

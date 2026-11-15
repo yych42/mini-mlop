@@ -623,6 +623,11 @@ class Store:
 
     # -- series -----------------------------------------------------------
 
+    def knows_series(self, run_id, name):
+        """Whether this series has been seen since the server started. False
+        negatives are possible (after a restart), false positives are not."""
+        return (run_id, name) in self._series
+
     def _series_id(self, w, run_id, name, kind):
         """Must be called inside a write transaction."""
         sid = self._series.get((run_id, name))

@@ -174,22 +174,58 @@ function seriesReader(runId, axis, points) {
   const many = batched((names) =>
     api(`/api/runs/${runId}/metrics?${q([...names.map((n) => ["name", n]), ["points", points], ["x", axis]])}`));
   return {
+    // current: the run is finished and has not moved on since this was read.
+    // recent: read moments ago (it came with the page, say); a view that is
+    // about to sync with its live stream need not ask again.
     held(name, run) {
       const entry = seriesHeld.get(key(name));
-      return entry && { s: entry.s, current: entry.stamp != null && entry.stamp === stampOf(run) };
+      return entry && {
+        s: entry.s,
+        current: !entry.reread && entry.stamp != null && entry.stamp === stampOf(run),
+        recent: !entry.reread && Date.now() - entry.at < 5000,
+      };
     },
     async read(name, run) {
       const stamp = stampOf(run);
       const s = (await many(name)) || { x: [], y: [] };
-      keep(seriesHeld, key(name), { s, stamp }, KEEP_SERIES);
+      keep(seriesHeld, key(name), { s, stamp, at: Date.now(), added: 0 }, KEEP_SERIES);
       return s;
+    },
+    // Points pushed by the server as they were logged: rows of
+    // [step, time, value]. Returns the series, or null if it is not held (it
+    // will be read whole when its card is first seen). `reread` is set when
+    // appending is no longer a faithful picture: points arrived out of order,
+    // or so many were added to a downsampled series that it should be
+    // bucketed afresh.
+    append(name, rows) {
+      const entry = seriesHeld.get(key(name));
+      if (!entry) return null;
+      const s = entry.s, col = axis === "time" ? 1 : 0;
+      for (const row of rows) {
+        const x = row[col], v = row[2], n = s.x.length;
+        if (n && x < s.x[n - 1]) { entry.reread = true; continue; }
+        if (n && x === s.x[n - 1]) {
+          if (s.min) entry.reread = true; else s.y[n - 1] = v;  // a step logged again replaces itself
+          continue;
+        }
+        s.x.push(x);
+        s.y.push(v);
+        if (s.min) { s.min.push(v); s.max.push(v); }
+        s.count = (s.count || 0) + 1;
+        entry.added++;
+      }
+      if (entry.added > points) entry.reread = true;
+      entry.stamp = null;
+      entry.at = Date.now();
+      return { s, reread: !!entry.reread };
     },
   };
 }
 
 for (const seed of boot["#series"] || []) {
   for (const [name, s] of Object.entries(seed.data)) {
-    seriesHeld.set(`${seed.run}|${seed.axis}|${seed.points}|${name}`, { s, stamp: stampOf(seed.of) });
+    seriesHeld.set(`${seed.run}|${seed.axis}|${seed.points}|${name}`,
+      { s, stamp: stampOf(seed.of), at: Date.now(), added: 0 });
   }
 }
 delete boot["#series"];
@@ -218,6 +254,59 @@ function poll(fn, { ms = POLL_MS, now = false } = {}) {
   }, ms);
   onLeave(() => clearInterval(id));
   if (now) fn().catch(handleError);
+}
+
+// -- live updates --------------------------------------------------------------
+// A view of something that can change opens one long-lived request and the
+// server writes to it as runs log (see live.py): `event` gets each message.
+// `sync` brings the whole view up to date by asking, and runs
+//  - when the stream opens, to cover what happened before it did,
+//  - when the tab is looked at again (the stream is closed while hidden),
+//  - every RESYNC_MS as a backstop, and
+//  - every POLL_MS for as long as the stream is down, which is how the page
+//    worked before there was one: a proxy that will not carry the stream
+//    costs promptness, nothing else.
+// `tick` runs every POLL_MS without asking anything (clocks on the page).
+const RESYNC_MS = 30000;
+
+function watch(query, { event, sync, tick }) {
+  let source = null, synced = 0;
+  const resync = () => { synced = Date.now(); sync().catch(handleError); };
+  const open = () => {
+    if (source || document.hidden) return;
+    source = new EventSource(`/api/events?${query}`);
+    source.onopen = resync;
+    source.onmessage = (m) => {
+      const ev = JSON.parse(m.data);
+      if (ev.type === "resync") resync(); else event(ev);
+    };
+  };
+  const close = () => { if (source) source.close(); source = null; };
+  const seen = () => (document.hidden ? close() : open());
+  document.addEventListener("visibilitychange", seen);
+  const id = setInterval(() => {
+    if (document.hidden) return;
+    const up = source && source.readyState === EventSource.OPEN;
+    if (!up || Date.now() - synced >= RESYNC_MS) resync();
+    else if (tick) tick();
+  }, POLL_MS);
+  onLeave(() => { close(); clearInterval(id); document.removeEventListener("visibilitychange", seen); });
+  open();
+}
+
+// Runs `fn` now, or once more after the run in flight: a burst of notices
+// becomes at most one request in the air and one queued.
+function coalesced(fn) {
+  let busy = false, again = false;
+  const go = async () => {
+    if (busy) { again = true; return; }
+    busy = true;
+    try { await fn(); } finally {
+      busy = false;
+      if (again) { again = false; go().catch(handleError); }
+    }
+  };
+  return () => go().catch(handleError);
 }
 
 function handleError(e) {
@@ -577,6 +666,7 @@ async function viewProject(project) {
   const empty = h("div");
   const chartsEl = h("div", {}, toolbar, sections, empty);
   const cards = new Set();
+  const byName = new Map();
   let chosen = [];
   // One batched reader per run: all of a run's charts arrive in one request.
   const readers = new Map();
@@ -585,22 +675,31 @@ async function viewProject(project) {
     const card = chartCard(name);
     charts.push(card.chart);
     let latest = 0;  // a reply that arrives after a newer request was sent is dropped
+    const with_ = () => chosen.filter((r) => r.metrics.includes(name));
+    const draw = (having, results) => card.chart.setData(having.map((r, i) => ({
+      label: r.name, color: SERIES[slots.get(r.id)], ...results[i],
+    })));
+    // From what is held, without asking: after points were pushed for a run.
+    const redraw = () => {
+      const having = with_(), held = having.map((r) => reader(r.id).held(name, r));
+      if (held.every(Boolean)) draw(having, held.map((e) => e.s));
+    };
     const refresh = lazily(card.el, async () => {
       const mine = ++latest;
-      const having = chosen.filter((r) => r.metrics.includes(name));
-      const draw = (results) => card.chart.setData(having.map((r, i) => ({
-        label: r.name, color: SERIES[slots.get(r.id)], ...results[i],
-      })));
-      // Finished runs whose series are already here need no request at all.
+      const having = with_();
+      // Finished runs whose series are already here need no request at all,
+      // nor do series that came with the page a moment ago.
       const held = having.map((r) => reader(r.id).held(name, r));
-      if (held.every((e) => e && e.current)) return draw(held.map((e) => e.s));
+      if (held.every((e) => e && (e.current || e.recent))) return draw(having, held.map((e) => e.s));
       const results = await Promise.all(having.map((r) => reader(r.id).read(name, r)));
-      if (mine === latest) draw(results);
+      if (mine === latest) draw(having, results);
     });
-    const part = { el: card.el, refresh, destroy() {
-      refresh.stop(); card.chart.destroy(); charts.splice(charts.indexOf(card.chart), 1); cards.delete(part);
+    const part = { el: card.el, refresh, redraw, destroy() {
+      refresh.stop(); card.chart.destroy(); charts.splice(charts.indexOf(card.chart), 1);
+      cards.delete(part); byName.delete(name);
     } };
     cards.add(part);
+    byName.set(name, part);
     return part;
   };
   const makeSection = ([group]) => {
@@ -636,14 +735,34 @@ async function viewProject(project) {
     more,
     chartsEl);
 
-  poll(async () => {
-    // Judged before the fetch, so a run that just finished gets its last points drawn.
-    const live = chosen.some((r) => r.status === "RUNNING");
+  // The list of runs, again: a run was added or removed, or one changed status
+  // or gained a metric.
+  const reload = async (cards) => {
+    // Judged before the fetch too, so a run that just finished gets its last points.
+    const was = chosen.some((r) => r.status === "RUNNING");
     ({ runs, total } = await fresh(`${base}/runs`));
     paintCounts();
     paintRows();
-    await paintCharts(live);
-  }, { now: !!had });
+    await paintCharts(cards && (was || chosen.some((r) => r.status === "RUNNING")));
+  };
+  const changed = coalesced(() => reload(false));
+  watch(q([["project", project]]), {
+    sync: () => reload(true),
+    tick: paintRows,
+    event(ev) {
+      if (ev.type === "run") return changed();
+      if (ev.type !== "metrics") return;
+      const r = chosen.find((r) => r.id === ev.run);
+      if (!r) return;
+      if (r.status !== "RUNNING") changed();  // a run thought over is logging again
+      for (const [name, rows] of Object.entries(ev.points)) {
+        const got = reader(r.id).append(name, rows), part = byName.get(name);
+        if (!got || !part) continue;
+        if (got.reread) part.refresh().catch(handleError); else part.redraw();
+      }
+    },
+  });
+  if (had) changed();
 }
 
 const MEDIA = ["IMAGE", "AUDIO", "VIDEO", "TEXT", "ARTIFACT", "FILE"];
@@ -706,18 +825,31 @@ async function viewRun(id, requested) {
   else if (tab === "system") content = runCharts(run, body, (n) => groupOf(n) === "sys", "time");
   else if (tab === "media") content = runMedia(run, body);
   else if (tab === "logs") {
-    const more = await runLogs(run, body);
-    content = { update: (r, live) => (live ? more() : null) };
+    const more = coalesced(await runLogs(run, body));
+    content = { update: (r, live) => (live ? more() : null), event: (ev) => ev.type === "logs" && more() };
   } else if (tab === "model") await runModel(run, body);
   else runOverview(run, body);
 
-  poll(async () => {
-    const live = run.status === "RUNNING";  // as of the last poll, so a run's final points still load
+  // The run itself, again: its status, and any series, tab or alert it gained.
+  const reload = async (cards) => {
+    const was = run.status === "RUNNING";  // so a run that just ended still gets its last points
     run = await fresh(`/api/runs/${id}`);
     paintHead();
     paintTabs();
-    await content.update(run, live);
-  }, { now: !!had });
+    await content.update(run, cards && (was || run.status === "RUNNING"));
+  };
+  const changed = coalesced(() => reload(false));
+  watch(q([["run", id]]), {
+    sync: () => reload(true),
+    tick: paintHead,
+    event(ev) {
+      if (ev.type === "run") return changed();
+      // Points for a run this page believes over: it is back; say so.
+      if (run.status !== "RUNNING") changed();
+      if (content.event) content.event(ev);
+    },
+  });
+  if (had) changed();
 }
 
 // The Charts and System tabs: a card per series, grouped by name prefix. A
@@ -730,6 +862,7 @@ function runCharts(run, body, want, axis) {
   put(body, toolbar, sections, empty);
   const cards = new Set();
   const reader = seriesReader(run.id, axis, 600);
+  const byName = new Map();
   let now = run;  // the run as of the latest poll
 
   const makeCard = (series) => {
@@ -754,23 +887,40 @@ function runCharts(run, body, want, axis) {
         drawn = true;
         if (!held) return read();
         draw(held.s);
-        if (!held.current) read().catch(handleError);
+        if (!held.current && !held.recent) read().catch(handleError);
       });
-      part = { el: card.el, refresh, destroy() { refresh.stop(); card.chart.destroy(); charts.splice(charts.indexOf(card.chart), 1); } };
+      part = { el: card.el, refresh, redraw: (s) => drawn && draw(s),
+        destroy() { refresh.stop(); card.chart.destroy(); charts.splice(charts.indexOf(card.chart), 1); } };
     } else {
       const card = dataCard(() => now, series);
       const refresh = lazily(card.el, card.load);
       part = { el: card.el, refresh, destroy() { refresh.stop(); card.destroy(); } };
     }
     cards.add(part);
+    byName.set(series.name, part);
     const destroy = part.destroy;
-    part.destroy = () => { destroy(); cards.delete(part); };
+    part.destroy = () => { destroy(); cards.delete(part); byName.delete(series.name); };
     return part;
   };
   const makeSection = ([group]) => {
     const grid = h("div", { class: "grid" });
     return { el: h("div", {}, h("h2", {}, group || "Metrics"), grid),
       update: ([, list]) => reconcile(grid, list, (s) => s.name, makeCard) };
+  };
+  // What the live stream says about this run's series.
+  const event = (ev) => {
+    if (ev.type === "metrics") {
+      for (const [name, rows] of Object.entries(ev.points)) {
+        const got = reader.append(name, rows), part = byName.get(name);
+        if (!got || !part) continue;
+        if (got.reread) part.refresh().catch(handleError); else part.redraw(got.s);
+      }
+    } else if (ev.type === "data") {
+      for (const name of ev.names) {
+        const part = byName.get(name);
+        if (part) part.refresh().catch(handleError);
+      }
+    }
   };
 
   const paint = (run) => {
@@ -787,6 +937,7 @@ function runCharts(run, body, want, axis) {
   };
   paint(run);
   return {
+    event,
     update(run, live) {
       paint(run);
       return live ? Promise.all([...cards].map((c) => c.refresh())) : null;
@@ -973,6 +1124,9 @@ function runMedia(run, body) {
   put(body, grid);
   paint(run);
   return {
+    event(ev) {
+      if (ev.type === "files") cards.forEach((c) => c.refresh().catch(handleError));
+    },
     update(run, live) {
       paint(run);
       return live ? Promise.all([...cards].map((c) => c.refresh())) : null;

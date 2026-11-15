@@ -20,6 +20,7 @@
 | `mini_mlop/compat/` | PyTorch, Lightning and Transformers integrations. |
 | `mini_mlop_server/` | The server. Standard library only; never imports `mini_mlop`. |
 | `mini_mlop_server/web/` | The web UI: `index.html`, `app.js`, `chart.js`, `style.css`. |
+| `mini_mlop_server/live.py` | The hub that pushes what runs log to the pages watching them. |
 | `tests/` | End-to-end tests: real client, real server, real HTTP. |
 | `deploy/` | Dockerfile, Compose file, systemd unit. |
 | `examples/` | Demo script and notebooks. |
@@ -48,6 +49,33 @@ re-sent batches idempotent: a client retry overwrites rather than duplicates.
 **Downsample on read.** The UI asks for at most a few hundred points per chart. Longer series are
 grouped into that many buckets in SQL, returning each bucket's mean, min and max; the chart draws
 the mean as the line and min–max as a band, so spikes survive the reduction.
+
+**A page load is one round trip.** Behind a tunnel or on a far-away machine, the time a page takes
+is the number of requests it makes one after another, not their size. So:
+
+- Views have real paths (`/runs/8`, `/projects/x`), which tells the server what is being asked
+  for. The page it returns carries, as inert JSON, the answers to the API requests that view
+  starts with: the session, the run, the first screen and a half of chart series, the newest
+  table steps. They are produced by running the API's own handlers for the caller's key
+  (`Handler.bootstrap`), so the access rules cannot differ. The script uses each once instead of
+  asking.
+- Scripts, styles and the icon are served under `/assets/<build>/`, where `<build>` is a hash of
+  every UI file, with a one-year immutable cache header. The page names the current build, so a
+  deploy is picked up on the next load and nothing is ever revalidated.
+- The browser keeps what it has loaded for the life of the tab: chart series by run, axis and
+  resolution, and answers about finished runs (which cannot change). Going back to a page draws
+  from that at once; only a live run, or one that has logged again since, is asked about.
+
+**Push, not polling.** A page watching a run or a project holds one `GET /api/events` open
+(server-sent events). Ingest handlers publish what they just stored to an in-memory hub
+(`live.py`), which copies it to the subscribers of that run or its project: new metric points
+verbatim (`{"type":"metrics","points":{name:[[step,time,value],…]}}`), which the page appends
+to the series it holds, and one-line notices (`data`, `files`, `logs`, `run`) for things the
+page then fetches incrementally. Nothing is queried to find out what is new, and an unwatched
+run costs a dictionary lookup per ingest. The page still syncs by asking when the stream opens,
+every 30 s as a backstop, and every 5 s while the stream is down, so a proxy that will not
+carry an event stream costs promptness and nothing else. A reader that falls 256 events behind
+is told to resync instead of being buffered for.
 
 **Streaming ingest.** Request bodies (chunked or not) are parsed line by line and written in
 batches of 5,000 rows, each its own short transaction. A slow or huge upload never holds the
@@ -106,6 +134,7 @@ Read by the UI (and usable from scripts):
 | `GET /api/runs/<id>/files?name=…` | File listing; `GET /api/files/<id>` for content (supports `Range`) |
 | `GET /api/runs/<id>/logs?after=<id>&limit=…` | Console lines |
 | `GET /api/runs/<id>/graph` | Model graph |
+| `GET /api/events?run=<id>` or `?project=<name>` | Server-sent events: what the run(s) log, as it arrives (see below) |
 | `POST /api/runs/<id>/stop`, `DELETE /api/runs/<id>`, `DELETE /api/projects/<name>` | |
 | `GET/POST /api/keys`, `DELETE /api/keys/<id>`, `GET /api/stats`, `GET /api/me` | |
 | `GET/POST /api/query`, `GET /api/query/schema` | Read-only SQL; see [agents.md](agents.md) |
