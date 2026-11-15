@@ -23,7 +23,7 @@ from .auth import login
 from .data import Data
 from .file import Artifact, Audio, File, Image, Text, Video
 from .iface import ServerInterface
-from .log import setup_logger, teardown_logger
+from .log import console, setup_logger, teardown_logger, uncaptured
 from .store import DataStore
 from .sys import System
 from .util import dict_to_json, get_char, get_val, to_json
@@ -77,6 +77,7 @@ class OpMonitor:
             logger.critical(f"{tag}: run did not stop; exiting")
             os._exit(signal.SIGINT.value)
 
+    @uncaptured
     def _worker_monitor(self, stop):
         while not stop():
             try:
@@ -139,7 +140,7 @@ class Op:
             setup_logger(
                 settings=self.settings,
                 logger=logger,
-                console=logging.getLogger("console"),
+                console=console,
             )  # global logger
             to_json(
                 [self.settings._sys.get_info()], f"{self.settings.get_dir()}/sys.json"
@@ -220,7 +221,7 @@ class Op:
             ) if self._iface else None
             logger.critical("%s: interrupted %s", tag, e)
         logger.debug(f"{tag}: finished")
-        teardown_logger(logger, console=logging.getLogger("console"))
+        teardown_logger(logger, console=console)
 
         self.settings.meta = []
         mlop.ops = [
@@ -288,6 +289,7 @@ class Op:
                 f"{tag}: alert not sent since interface is disabled"
             )
 
+    @uncaptured
     def _worker(self, stop) -> None:
         while not stop() or not self._queue.empty():
             try:

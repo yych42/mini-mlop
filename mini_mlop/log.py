@@ -1,12 +1,15 @@
 import builtins
+import functools
 import logging
 import sys
+import threading
 import time
 
 from .api import make_compat_message_v1
 from .util import ANSI
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
+console = logging.getLogger(f"{logger.name}.console")  # captured stdout/stderr
 
 _input = builtins.input
 _stdout = sys.stdout
@@ -42,6 +45,11 @@ class ColorFormatter(logging.Formatter):
 
 
 class ConsoleHandler:
+    """Stands in for sys.stdout / sys.stderr while a run is live: every line
+    is recorded for the run, then written to the stream it replaced."""
+
+    _capturing = threading.local()  # shared by both streams
+
     def __init__(
         self, logger, queue, level=logging.INFO, stream=sys.stdout, type="stdout"
     ):
@@ -51,23 +59,56 @@ class ConsoleHandler:
         self.stream = stream
         self.type = type
         self.count = 0
+        self.active = True
 
-    def write(self, buf: str) -> None:
-        for line in buf.splitlines():
-            if line:  # do not log empty lines
-                self.count += 1
-                self.queue.put(
-                    make_compat_message_v1(self.level, line, time.time(), self.count)
-                )
-                self.logger.log(self.level, line)
+    def write(self, buf: str) -> int:
+        # Recording a line can itself write to stdout/stderr: a logging handler
+        # the host created after init holds this object as its stream, and so
+        # does logging's own error reporting. Such a nested write is passed
+        # through unrecorded, or it would record itself without end. So is
+        # anything written once the run is over, by whoever kept a reference,
+        # and anything from the package's own threads (see `uncaptured`).
+        local = ConsoleHandler._capturing
+        if self.active and not getattr(local, "busy", False):
+            local.busy = True
+            try:
+                for line in buf.splitlines():
+                    if line:  # do not log empty lines
+                        self.count += 1
+                        self.queue.put(
+                            make_compat_message_v1(
+                                self.level, line, time.time(), self.count
+                            )
+                        )
+                        self.logger.log(self.level, line)
+            finally:
+                local.busy = False
         self.stream.write(buf)
         self.stream.flush()
+        return len(buf)
 
     def flush(self):
         self.stream.flush()
 
     def __getattr__(self, attr):
+        if attr == "stream":  # not set yet, e.g. while being copied
+            raise AttributeError(attr)
         return getattr(self.stream, attr)
+
+
+def uncaptured(worker):
+    """For the package's own threads: nothing they write is recorded as the
+    run's console output. Recording it feeds itself where the host's logging
+    prints to the captured streams: sending a line logs a line (the HTTP
+    library's request log, or our own report of a failed send), which is then
+    captured and sent, and the run can never finish sending."""
+
+    @functools.wraps(worker)
+    def run(*args, **kwargs):
+        ConsoleHandler._capturing.busy = True
+        return worker(*args, **kwargs)
+
+    return run
 
 
 def stream_formatter(settings):
@@ -106,7 +147,7 @@ def setup_logger(settings, logger, console=None) -> None:
         logger.addHandler(stream_handler)
 
     if settings._op_id and not settings.disable_console:
-        if len(console.handlers) > 0:  # full logger
+        if isinstance(sys.stdout, ConsoleHandler):  # already capturing
             return
         logger, console = setup_logger_file(settings, logger, console)
 
@@ -114,15 +155,29 @@ def setup_logger(settings, logger, console=None) -> None:
 def teardown_logger(logger, console=None):
     for h in logger.handlers[:]:
         logger.removeHandler(h)
+        h.close()
     if console:
         builtins.input = _input
-        sys.stdout = _stdout  # global _stdout
-        sys.stderr = _stderr
-        teardown_logger(logger=console)
+        for name in ("stdout", "stderr"):
+            # Unwrap only what is ours. Whatever replaced the stream since
+            # (a test's capture, a progress bar) stays; if it writes through
+            # the wrapper, the wrapper now only passes the text on.
+            wrapper = getattr(sys, name)
+            while isinstance(wrapper, ConsoleHandler):
+                wrapper.active = False
+                wrapper = wrapper.stream
+                setattr(sys, name, wrapper)
+        for h in console.handlers[:]:
+            console.removeHandler(h)
+            h.close()
 
 
 def setup_logger_file(settings, logger, console):
     console.setLevel(logging.DEBUG)
+    # Captured lines go to the run's files and nowhere else. Passed up to the
+    # root logger they would reach the host's handlers, which print them to
+    # the very streams they were captured from.
+    console.propagate = False
 
     file_handler = logging.FileHandler(f"{settings.get_dir()}/{settings.tag}.log")
     file_formatter = logging.Formatter(

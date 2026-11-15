@@ -4,12 +4,13 @@
 pip install git+https://github.com/yych42/mini-mlop.git
 ```
 
-The base install needs only `httpx` and `psutil`. Extras:
+The base install needs only `httpx`, `psutil` and, on Linux and Windows, `nvidia-ml-py` (a small
+pure-Python binding; NVIDIA GPU metrics are logged wherever a driver is present). Extras:
 
 | Extra | Adds | Needed for |
 |---|---|---|
 | `media` | numpy, pillow, soundfile | `mlop.Image` / `mlop.Audio` from arrays |
-| `gpu` | nvidia-ml-py | NVIDIA utilisation, memory and power metrics |
+| `gpu` | nvidia-ml-py | Nothing new on Linux and Windows, where it is already installed |
 | `full` | all of the above | |
 
 ```bash

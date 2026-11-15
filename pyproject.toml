@@ -16,15 +16,17 @@ authors = [
 keywords = ["mlops", "experiment-tracking", "self-hosted", "machine-learning"]
 
 # The server (`mini_mlop_server`) needs nothing beyond the standard library.
-# These two are for the logging client (`mini_mlop`).
+# These are for the logging client (`mini_mlop`). nvidia-ml-py is a small
+# pure-Python binding that does nothing on a machine without an NVIDIA driver.
 dependencies = [
   "httpx",
   "psutil",
+  "nvidia-ml-py; sys_platform == 'linux' or sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
 media = ["numpy", "pillow", "soundfile"]  # mlop.Image / mlop.Audio from arrays
-gpu = ["nvidia-ml-py"]                    # NVIDIA utilisation metrics
+gpu = ["nvidia-ml-py"]                    # already a dependency on Linux and Windows; kept for old install lines
 full = ["numpy", "pillow", "soundfile", "nvidia-ml-py"]
 dev = ["pytest", "numpy", "pillow"]
 

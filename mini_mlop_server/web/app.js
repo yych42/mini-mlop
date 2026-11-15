@@ -381,7 +381,7 @@ function byGroup(names) {
 function unitOf(name) {
   if (groupOf(name) !== "sys") return null;
   if (/\.(percentage|pct)(\.|$)/.test(name)) return "percent";
-  if (/\/(memory|mem|disk|network|net)\./.test(name)) return "bytes";
+  if (/\/(memory|mem|disk|network|net)\.|\.(memory|mem)\.used$/.test(name)) return "bytes";
   return null;
 }
 

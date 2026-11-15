@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import time
 
+from .log import uncaptured
 from .sets import Settings
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
@@ -69,6 +70,7 @@ class DataStore:
         self.conn.close()
         logger.info(f"{tag}: find saved database at {self.db}")
 
+    @uncaptured
     def _worker(self):
         while not self._stop_event.is_set():
             batch_num, batch_file = [], []

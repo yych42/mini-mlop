@@ -139,6 +139,92 @@ def test_console_output_is_captured(server, api, tmp_path, capsys):
     assert "hello from the training script" in [l["message"] for l in logs["lines"]]
 
 
+def test_logging_configured_after_init_does_not_loop(
+    server, api, tmp_path, capsys, monkeypatch
+):
+    """A handler made after init holds the capturing stderr as its stream. The
+    captured line must not come back to that handler through the root logger,
+    and what sending a line logs must not be captured as a line to send."""
+    import logging
+    import sys
+
+    settings = {"url": server.url, "_auth": server.key, **FAST, "disable_console": False}
+    run = mlop.init(dir=str(tmp_path / "client"), project="e2e", settings=settings)
+    root = logging.getLogger()
+    handler = logging.StreamHandler(sys.stderr)
+    root.addHandler(handler)
+    monkeypatch.setattr(root, "level", logging.INFO)  # as basicConfig(level=INFO)
+    try:
+        logging.getLogger("host.app").warning("first log line")
+        print("print after logging")
+        time.sleep(2.5)  # a few rounds of sending, each logged by httpx at INFO
+    finally:
+        run.finish()
+        handler.stream.write("written after the run\n")  # passes through, unrecorded
+        root.removeHandler(handler)
+    assert capsys.readouterr().err.count("first log line") == 1
+
+    _, logs = api.get(f"/api/runs/{run.settings._op_id}/logs")
+    messages = [l["message"] for l in logs["lines"]]
+    assert messages.count("first log line") == 1
+    assert "print after logging" in messages
+    assert "written after the run" not in messages
+    assert not [m for m in messages if "HTTP Request" in m or "mini_mlop" in m]
+
+
+def test_finish_restores_only_its_own_streams(server, tmp_path):
+    import sys
+
+    settings = {"url": server.url, "_auth": server.key, **FAST, "disable_console": False}
+    before = sys.stdout
+    run = mlop.init(dir=str(tmp_path / "client"), project="e2e", settings=settings)
+    assert sys.stdout is not before
+    run.finish()
+    assert sys.stdout is before
+
+
+def test_gpu_metrics_survive_an_unsupported_query(monkeypatch):
+    """Unified-memory devices (NVIDIA GB10) answer NotSupported for memory."""
+    pynvml = pytest.importorskip("pynvml")
+    from types import SimpleNamespace as NS
+
+    from mini_mlop import sys as mlop_sys
+
+    def unsupported(*_):
+        raise pynvml.NVMLError(pynvml.NVML_ERROR_NOT_SUPPORTED)
+
+    fake = {
+        "nvmlInit": lambda: None,
+        "nvmlDeviceGetCount": lambda: 1,
+        "nvmlSystemGetDriverVersion": lambda: "1.0",
+        "nvmlDeviceGetHandleByIndex": lambda i: i,
+        "nvmlDeviceGetName": lambda h: "NVIDIA GB10",
+        "nvmlDeviceGetMemoryInfo": unsupported,
+        "nvmlDeviceGetTemperature": lambda h, sensor: 30,
+        "nvmlDeviceGetUtilizationRates": lambda h: NS(gpu=7, memory=0),
+        "nvmlDeviceGetPowerUsage": lambda h: 4000,
+        "nvmlDeviceGetEnforcedPowerLimit": unsupported,
+        "nvmlDeviceGetComputeRunningProcesses": lambda h: [NS(pid=1, usedGpuMemory=100)],
+        "nvmlDeviceGetGraphicsRunningProcesses": lambda h: [NS(pid=2, usedGpuMemory=None)],
+    }
+    for name, fn in fake.items():
+        fn.__name__ = name
+        monkeypatch.setattr(pynvml, name, fn)
+    monkeypatch.setattr(mlop_sys, "run_cmd", lambda *a, **k: "smi output")
+
+    system = object.__new__(mlop_sys.System)
+    system.settings = mlop.Settings()
+    system.gpu = system.get_gpu()
+    assert system.gpu["nvidia"]["devices"] == [{"name": "NVIDIA GB10", "temp": 30, "pid": [1, 2]}]
+    assert system.monitor_gpu() == {
+        "sys/gpu.nvda.nvidia_gb10.pct": 7,
+        "sys/gpu.nvda.nvidia_gb10.mem.pct": 0,
+        "sys/gpu.nvda.nvidia_gb10.mem.used": 100,
+        "sys/gpu.nvda.nvidia_gb10.power": 4000,
+        "sys/gpu.nvda.nvidia_gb10.temp": 30,
+    }
+
+
 def test_alert_is_stored(server, api, tmp_path):
     run = start(server, tmp_path)
     run.alert(title="diverged", message="loss is nan", level="ERROR")

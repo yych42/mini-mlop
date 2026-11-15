@@ -22,6 +22,25 @@ def _strip_credentials(url: str) -> str:
     return re.sub(r"(?<=://)[^/@]+@", "", url)
 
 
+def _nvml(fn, *args):
+    """One NVML query, or None where this device or driver cannot answer it."""
+    import pynvml
+
+    try:
+        return fn(*args)
+    except pynvml.NVMLError as e:
+        logger.debug("%s: NVIDIA: %s: %s", tag, fn.__name__, e)
+        return None
+
+
+def _nvml_processes(handle) -> list:
+    import pynvml
+
+    return (_nvml(pynvml.nvmlDeviceGetComputeRunningProcesses, handle) or []) + (
+        _nvml(pynvml.nvmlDeviceGetGraphicsRunningProcesses, handle) or []
+    )
+
+
 class System:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -91,47 +110,41 @@ class System:
             d["nvidia"] = {"smi": n}
             try:
                 import pynvml
-
-                try:
-                    pynvml.nvmlInit()
-                    logger.info(f"{tag}: NVIDIA GPU detected")
-                    d["nvidia"].update(
-                        {
-                            "count": pynvml.nvmlDeviceGetCount(),
-                            "driver": pynvml.nvmlSystemGetDriverVersion(),
-                            "devices": [],
-                            "handles": [],
-                        }
-                    )
-                    for i in range(d["nvidia"]["count"]):
-                        h = pynvml.nvmlDeviceGetHandleByIndex(i)
-                        d["nvidia"]["handles"].append(h)
-                        d["nvidia"]["devices"].append(
-                            {
-                                "name": pynvml.nvmlDeviceGetName(h),
-                                "memory": {
-                                    "total": pynvml.nvmlDeviceGetMemoryInfo(h).total
-                                },
-                                "temp": pynvml.nvmlDeviceGetTemperature(
-                                    h, pynvml.NVML_TEMPERATURE_GPU
-                                ),
-                                "pid": [
-                                    p.pid
-                                    for p in (
-                                        pynvml.nvmlDeviceGetComputeRunningProcesses(h)
-                                        + pynvml.nvmlDeviceGetGraphicsRunningProcesses(
-                                            h
-                                        )
-                                    )
-                                ],
-                            }
-                        )
-                except pynvml.NVMLError_LibraryNotFound:
-                    logger.debug(f"{tag}: NVIDIA: driver not found")
-                except Exception as e:
-                    logger.error("%s: NVIDIA: error: %s", tag, e)
             except ImportError:
                 logger.debug(f"{tag}: NVIDIA: pynvml not found")
+                return d
+            try:
+                pynvml.nvmlInit()
+                logger.info(f"{tag}: NVIDIA GPU detected")
+                d["nvidia"].update(
+                    {
+                        "count": pynvml.nvmlDeviceGetCount(),
+                        "driver": _nvml(pynvml.nvmlSystemGetDriverVersion),
+                        "devices": [],
+                        "handles": [],
+                    }
+                )
+                for i in range(d["nvidia"]["count"]):
+                    h = pynvml.nvmlDeviceGetHandleByIndex(i)
+                    # Every query below is optional: what a device reports
+                    # varies (one with unified memory has no memory of its
+                    # own to report), and one gap must not hide the rest.
+                    dev = {"name": str(_nvml(pynvml.nvmlDeviceGetName, h) or f"gpu{i}")}
+                    memory = _nvml(pynvml.nvmlDeviceGetMemoryInfo, h)
+                    if memory is not None:
+                        dev["memory"] = {"total": memory.total}
+                    temp = _nvml(
+                        pynvml.nvmlDeviceGetTemperature, h, pynvml.NVML_TEMPERATURE_GPU
+                    )
+                    if temp is not None:
+                        dev["temp"] = temp
+                    dev["pid"] = [p.pid for p in _nvml_processes(h)]
+                    d["nvidia"]["devices"].append(dev)
+                    d["nvidia"]["handles"].append(h)
+            except pynvml.NVMLError_LibraryNotFound:
+                logger.debug(f"{tag}: NVIDIA: driver not found")
+            except Exception as e:
+                logger.error("%s: NVIDIA: error: %s", tag, e)
         return d
 
     def get_git(self) -> Dict[str, Any]:
@@ -239,19 +252,41 @@ class System:
                 if k.startswith("bytes")
             },
         }
-        if self.gpu:
-            if self.gpu.get("nvidia", {}).get("handles"):
-                import pynvml
+        d.update(self.monitor_gpu())
+        return d
 
-                for h in self.gpu["nvidia"].get("handles", []):
-                    dev = str(pynvml.nvmlDeviceGetName(h)).lower().replace(" ", "_")
-                    d[f"{p}/gpu.nvda.{dev}.pct"] = pynvml.nvmlDeviceGetUtilizationRates(
-                        h
-                    ).gpu
-                    d[f"{p}/gpu.nvda.{dev}.mem.pct"] = (
-                        pynvml.nvmlDeviceGetUtilizationRates(h).memory
-                    )
-                    d[f"{p}/gpu.nvda.{dev}.power"] = pynvml.nvmlDeviceGetPowerUsage(h)
+    def monitor_gpu(self) -> Dict[str, Union[int, float]]:
+        nvidia = (self.gpu or {}).get("nvidia", {})
+        if not nvidia.get("handles"):
+            return {}
+        import pynvml
+
+        p = self.settings.x_sys_label
+        d: Dict[str, Union[int, float]] = {}
+        names = [dev["name"].lower().replace(" ", "_") for dev in nvidia["devices"]]
+        for i, h in enumerate(nvidia["handles"]):
+            # two devices of one model must not write to the same series
+            dev = names[i] if names.count(names[i]) == 1 else f"{names[i]}.{i}"
+            m: Dict[str, Any] = {}
+            rates = _nvml(pynvml.nvmlDeviceGetUtilizationRates, h)
+            if rates is not None:
+                m["pct"], m["mem.pct"] = rates.gpu, rates.memory
+            memory = _nvml(pynvml.nvmlDeviceGetMemoryInfo, h)
+            if memory is not None:
+                m["mem.used"] = memory.used
+            else:
+                # Unified memory: the device has no pool of its own, so what
+                # the processes on it hold is the closest thing to "used".
+                used = [u.usedGpuMemory for u in _nvml_processes(h)]
+                if used:
+                    m["mem.used"] = sum(u or 0 for u in used)
+            m["power"] = _nvml(pynvml.nvmlDeviceGetPowerUsage, h)
+            m["temp"] = _nvml(
+                pynvml.nvmlDeviceGetTemperature, h, pynvml.NVML_TEMPERATURE_GPU
+            )
+            d.update(
+                {f"{p}/gpu.nvda.{dev}.{k}": v for k, v in m.items() if v is not None}
+            )
         return d
 
     def monitor_human(self) -> Dict[str, Any]:  # TODO: deprecate
@@ -301,32 +336,34 @@ class System:
                 import pynvml
 
                 d["gpu"]["nvidia"] = {}
-                d["gpu"]["nvidia"]["devices"] = [
-                    {
-                        "name": pynvml.nvmlDeviceGetName(h),
-                        "temp": pynvml.nvmlDeviceGetTemperature(
-                            h, pynvml.NVML_TEMPERATURE_GPU
-                        ),
-                        "gpu_percent": pynvml.nvmlDeviceGetUtilizationRates(h).gpu,
-                        "memory": {
-                            "percent": pynvml.nvmlDeviceGetUtilizationRates(h).memory,
-                            "used": to_human(pynvml.nvmlDeviceGetMemoryInfo(h).used),
-                            "total": to_human(pynvml.nvmlDeviceGetMemoryInfo(h).total),
-                        },
-                        "power": {
-                            "usage": pynvml.nvmlDeviceGetPowerUsage(h),
-                            "limit": pynvml.nvmlDeviceGetEnforcedPowerLimit(h),
-                        },
-                        "pid": [
-                            p.pid
-                            for p in (
-                                pynvml.nvmlDeviceGetComputeRunningProcesses(h)
-                                + pynvml.nvmlDeviceGetGraphicsRunningProcesses(h)
-                            )
-                        ],
-                    }
-                    for h in self.gpu["nvidia"].get("handles", [])
-                ]
+                devices = []
+                for h in self.gpu["nvidia"].get("handles", []):
+                    rates = _nvml(pynvml.nvmlDeviceGetUtilizationRates, h)
+                    memory = _nvml(pynvml.nvmlDeviceGetMemoryInfo, h)
+                    devices.append(
+                        {
+                            "name": _nvml(pynvml.nvmlDeviceGetName, h),
+                            "temp": _nvml(
+                                pynvml.nvmlDeviceGetTemperature,
+                                h,
+                                pynvml.NVML_TEMPERATURE_GPU,
+                            ),
+                            "gpu_percent": rates.gpu if rates else None,
+                            "memory": {
+                                "percent": rates.memory if rates else None,
+                                "used": to_human(memory.used) if memory else None,
+                                "total": to_human(memory.total) if memory else None,
+                            },
+                            "power": {
+                                "usage": _nvml(pynvml.nvmlDeviceGetPowerUsage, h),
+                                "limit": _nvml(
+                                    pynvml.nvmlDeviceGetEnforcedPowerLimit, h
+                                ),
+                            },
+                            "pid": [p.pid for p in _nvml_processes(h)],
+                        }
+                    )
+                d["gpu"]["nvidia"]["devices"] = devices
         if self.settings.mode == "debug":
             d["memory"]["swap"] = {
                 k: to_human(v)

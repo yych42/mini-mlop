@@ -15,7 +15,7 @@ from .api import (
     make_compat_status_v1,
     make_compat_storage_v1,
 )
-from .log import _stderr
+from .log import _stderr, uncaptured
 from .sets import Settings
 from .util import print_url
 
@@ -228,6 +228,7 @@ class ServerInterface:
         )
         self._thread_meta.start()
 
+    @uncaptured
     def _worker_progress(self):
         try:
             tty = _stderr.isatty()
@@ -263,6 +264,7 @@ class ServerInterface:
             _stderr.write("\r\x1b[K")
             _stderr.flush()
 
+    @uncaptured
     def _worker_publish(self, e, h, q, stop, name=None, drained=None):
         while not (q.empty() and stop()):  # terminates only when both conditions met
             if q.empty():
@@ -280,6 +282,7 @@ class ServerInterface:
                 if q.empty() and drained is not None:
                     drained.set()
 
+    @uncaptured
     def _worker_file(self, stop):
         # One worker uploads files in order, so memory and connections stay
         # bounded and nothing is still in flight when the run finishes.
@@ -329,6 +332,7 @@ class ServerInterface:
                     client=self.client_storage,
                 )
 
+    @uncaptured
     def _worker_meta(self, num=None, file=None):
         if num:
             r = self._post_v1(
