@@ -52,6 +52,56 @@ function put(el, ...kids) {
   el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
 }
 
+// Live views redraw every few seconds, and the reader is in the middle of
+// using them: scrolled into a table, hovering a cell, holding a slider. So
+// polls never rebuild what is already on screen. Instead, a view is a set of
+// parts that are made once and then updated in place.
+//
+// reconcile keeps `parent`'s children in step with `items`, one part per key.
+// `make(item)` returns {el, update?(item), destroy?()}; update also runs right
+// after make, so each part has a single drawing path. Parts whose key stays
+// are updated, not replaced; new keys are made, gone keys destroyed, and an
+// element is only moved when it is out of order.
+function reconcile(parent, items, key, make) {
+  const before = parent._parts || new Map();
+  const after = new Map();
+  for (const item of items) {
+    const k = key(item);
+    if (after.has(k)) continue;
+    const part = before.get(k) || make(item);
+    if (part.update) part.update(item);
+    after.set(k, part);
+  }
+  for (const [k, part] of before) {
+    if (after.has(k)) continue;
+    part.el.remove();
+    if (part.destroy) part.destroy();
+  }
+  let at = parent.firstChild;
+  for (const part of after.values()) {
+    if (part.el === at) at = at.nextSibling;
+    else parent.insertBefore(part.el, at);
+  }
+  parent._parts = after;
+}
+
+// Writes only when the text changed, so an unchanged poll leaves text
+// selections and the DOM alone.
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+function icon(d) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  const path = document.createElementNS(NS, "path");
+  for (const [k, v] of Object.entries({ viewBox: "0 0 16 16", width: "14", height: "14", "aria-hidden": "true" })) svg.setAttribute(k, v);
+  for (const [k, v] of Object.entries({ d, fill: "none", stroke: "currentColor", "stroke-width": "1.5",
+    "stroke-linecap": "round", "stroke-linejoin": "round" })) path.setAttribute(k, v);
+  svg.append(path);
+  return svg;
+}
+
 // -- API ---------------------------------------------------------------------
 class Unauthorized extends Error {}
 
@@ -132,8 +182,16 @@ const STATUS_TEXT = {
 };
 
 function statusBadge(run) {
-  const label = run.stalled ? "Stalled" : STATUS_TEXT[run.status] || run.status;
-  return h("span", { class: `status ${run.status}` }, h("i"), label);
+  const label = document.createTextNode("");
+  const el = h("span", {}, h("i"), label);
+  const update = (run) => {
+    const cls = `status ${run.status}`;
+    if (el.className !== cls) el.className = cls;
+    const text = run.stalled ? "Stalled" : STATUS_TEXT[run.status] || run.status;
+    if (label.data !== text) label.data = text;
+  };
+  update(run);
+  return { el, update };
 }
 
 function groupOf(name) {
@@ -176,7 +234,9 @@ function lazily(el, load) {
   );
   io.observe(el);
   onLeave(() => io.disconnect());
-  return () => (visible ? load() : Promise.resolve());
+  const refresh = () => (visible ? load() : Promise.resolve());
+  refresh.stop = () => io.disconnect();
+  return refresh;
 }
 
 // -- chart controls shared by run and compare views --------------------------
@@ -195,12 +255,48 @@ function chartToolbar(charts) {
   );
 }
 
+// Which cards span the full width of their grid, by series name. Kept in this
+// browser only; a name that is wide in one run is wide in every run.
+const wide = (() => {
+  const KEY = "mini-mlop.wide";
+  let names;
+  try { names = new Set(JSON.parse(localStorage.getItem(KEY) || "[]")); } catch { names = new Set(); }
+  return {
+    has: (name) => names.has(name),
+    toggle(name) {
+      if (!names.delete(name)) names.add(name);
+      try { localStorage.setItem(KEY, JSON.stringify([...names])); } catch { /* private mode: this page only */ }
+      return names.has(name);
+    },
+  };
+})();
+
+const EXPAND = "M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9";
+const SHRINK = "M13 7H9V3M9 7l4.5-4.5M3 9h4v4M7 9l-4.5 4.5";
+
+// A card in a chart grid: title, an optional readout, and a button that lets
+// the card take the whole row (and grow taller) for a closer look.
+function gridCard(name, cls, readout, ...body) {
+  const el = h("div", { class: cls });
+  const button = h("button", { type: "button", class: "icon", onclick: () => paint(wide.toggle(name)) });
+  const paint = (on) => {
+    el.classList.toggle("wide", on);
+    button.setAttribute("aria-pressed", String(on));
+    button.setAttribute("aria-label", `${on ? "Shrink" : "Expand"} ${name}`);
+    button.title = on ? "Back to grid size" : "Full width";
+    put(button, icon(on ? SHRINK : EXPAND));
+  };
+  paint(wide.has(name));
+  el.append(h("header", { class: "cardhead" }, h("span", { class: "title", title: name }, name),
+    h("span", { class: "grow" }), readout, button), ...body);
+  return el;
+}
+
 function chartCard(title) {
   const canvas = h("canvas", { tabindex: "0", role: "img", "aria-label": `Line chart of ${title}` });
   const latest = h("span", { class: "latest num" });
   const note = h("div", { class: "note" });
-  const el = h("div", { class: "card chart" },
-    h("header", {}, h("span", { class: "title", title }, title), latest), canvas, note);
+  const el = gridCard(title, "card chart", latest, canvas, note);
   const chart = new LineChart(canvas, { smooth: prefs.smooth, logY: prefs.log });
   onLeave(() => chart.destroy());
   return { el, chart, latest, note };
@@ -251,12 +347,21 @@ async function viewProjects() {
     return;
   }
   const body = h("tbody");
-  const fill = (list) => put(body, ...list.map((p) =>
-    h("tr", {},
-      h("td", {}, h("a", { href: `#/projects/${encodeURIComponent(p.name)}` }, p.name)),
-      h("td", { class: "num" }, p.runs),
-      h("td", {}, p.running ? h("span", { class: "status RUNNING" }, h("i"), `${p.running} running`) : ""),
-      h("td", { class: "muted" }, ago(p.last_activity)))));
+  const fill = (list) => reconcile(body, list, (p) => p.name, (p) => {
+    const runs = h("td", { class: "num" });
+    const running = h("span", { class: "status RUNNING" }, h("i"), "");
+    const last = h("td", { class: "muted" });
+    return {
+      el: h("tr", {}, h("td", {}, h("a", { href: `#/projects/${encodeURIComponent(p.name)}` }, p.name)),
+        runs, h("td", {}, running), last),
+      update(p) {
+        setText(runs, String(p.runs));
+        running.hidden = !p.running;
+        running.lastChild.data = `${p.running} running`;
+        setText(last, ago(p.last_activity));
+      },
+    };
+  });
   fill(projects);
   put(view, 
     h("div", { class: "head" }, h("h1", {}, "Projects")),
@@ -294,76 +399,106 @@ async function viewProject(project) {
     return [...seen.entries()].sort((a, b) => b[1].size - a[1].size).slice(0, 5).map(([k]) => k);
   })();
 
-  const tbody = h("tbody");
-  const chartsEl = h("div");
   const hint = h("span", { class: "sub" });
+  const count = h("span", { class: "sub" });
+  const more = h("p", { class: "muted" });
+  const paintCounts = () => {
+    setText(count, `${total} run${total === 1 ? "" : "s"}`);
+    more.hidden = total <= runs.length;
+    setText(more, `Showing the ${runs.length} most recent runs.`);
+  };
 
-  function renderTable() {
-    put(tbody, ...runs.map((r) => {
-      const slot = slots.get(r.id);
-      const box = h("input", { type: "checkbox", checked: slot != null, "aria-label": `Compare ${r.name}`,
-        onchange: () => {
-          if (box.checked) {
-            if (!take(r.id)) {
-              box.checked = false;
-              hint.textContent = `Up to ${MAX_COMPARE} runs can be compared at once.`;
-              return;
-            }
-          } else slots.delete(r.id);
-          hint.textContent = "";
-          renderTable();
-          renderCharts();
-        } });
-      return h("tr", {},
-        h("td", {}, box),
-        h("td", {}, h("span", { class: "swatch", style: slot != null ? `background:var(${SERIES[slot]})` : "visibility:hidden" }),
-          h("a", { href: `#/runs/${r.id}` }, r.name)),
-        h("td", {}, statusBadge(r)),
-        h("td", { class: "muted" }, ago(r.created_at)),
-        h("td", { class: "num" }, runDuration(r)),
-        configCols.map((k) => {
-          const v = (r.config || {})[k];
-          return h("td", { class: "clip num" }, v === undefined ? "" : typeof v === "number" ? fmt(v) : String(v));
-        }));
-    }));
-  }
-
-  let refreshers = [];
-  function renderCharts() {
-    refreshers = [];
-    const chosen = runs.filter((r) => slots.has(r.id));
-    const names = [...new Set(chosen.flatMap((r) => r.metrics))].filter((n) => groupOf(n) !== "sys").sort();
-    if (!chosen.length || !names.length) {
-      put(chartsEl, emptyState(chosen.length ? "The selected runs have not logged any metrics yet." : "Tick runs above to compare their metrics."));
-      return;
-    }
-    const charts = [];
-    const sections = byGroup(names).map(([group, list]) => {
-      const grid = h("div", { class: "grid" });
-      for (const name of list) {
-        const card = chartCard(name);
-        charts.push(card.chart);
-        const having = chosen.filter((r) => r.metrics.includes(name));
-        const load = async () => {
-          const results = await Promise.all(having.map((r) =>
-            api(`/api/runs/${r.id}/metrics?${q([["name", name], ["points", 400]])}`)));
-          card.chart.setData(having.map((r, i) => ({
-            label: r.name, color: SERIES[slots.get(r.id)], ...(results[i][name] || { x: [], y: [] }),
-          })));
-        };
-        refreshers.push(lazily(card.el, load));
-        grid.append(card.el);
+  // -- the runs table: one row per run, updated in place --------------------
+  const tbody = h("tbody");
+  const toggle = (id, box) => {
+    if (box.checked) {
+      if (!take(id)) {
+        box.checked = false;
+        hint.textContent = `Up to ${MAX_COMPARE} runs can be compared at once.`;
+        return;
       }
-      return [h("h2", {}, group || "Metrics"), grid];
+    } else slots.delete(id);
+    hint.textContent = "";
+    paintRows();
+    paintCharts(true);
+  };
+  const makeRow = (r) => {
+    const box = h("input", { type: "checkbox", "aria-label": `Compare ${r.name}`, onchange: () => toggle(r.id, box) });
+    const swatch = h("span", { class: "swatch" });
+    const link = h("a", { href: `#/runs/${r.id}` });
+    const badge = statusBadge(r);
+    const started = h("td", { class: "muted" });
+    const duration = h("td", { class: "num" });
+    const config = configCols.map(() => h("td", { class: "clip num" }));
+    return {
+      el: h("tr", {}, h("td", {}, box), h("td", {}, swatch, link), h("td", {}, badge.el), started, duration, config),
+      update(r) {
+        const slot = slots.get(r.id);
+        box.checked = slot != null;
+        swatch.style.background = slot != null ? `var(${SERIES[slot]})` : "";
+        swatch.style.visibility = slot != null ? "" : "hidden";
+        setText(link, r.name);
+        badge.update(r);
+        setText(started, ago(r.created_at));
+        setText(duration, runDuration(r));
+        configCols.forEach((k, i) => {
+          const v = (r.config || {})[k];
+          setText(config[i], v === undefined ? "" : typeof v === "number" ? fmt(v) : String(v));
+        });
+      },
+    };
+  };
+  const paintRows = () => reconcile(tbody, runs, (r) => r.id, makeRow);
+
+  // -- compare charts: one card per metric any selected run has logged ------
+  const charts = [];
+  const toolbar = chartToolbar(charts);
+  const sections = h("div");
+  const empty = h("div");
+  const chartsEl = h("div", {}, toolbar, sections, empty);
+  const cards = new Set();
+  let chosen = [];
+  const makeCard = (name) => {
+    const card = chartCard(name);
+    charts.push(card.chart);
+    let latest = 0;  // a reply that arrives after a newer request was sent is dropped
+    const refresh = lazily(card.el, async () => {
+      const mine = ++latest;
+      const having = chosen.filter((r) => r.metrics.includes(name));
+      const results = await Promise.all(having.map((r) =>
+        api(`/api/runs/${r.id}/metrics?${q([["name", name], ["points", 400]])}`)));
+      if (mine !== latest) return;
+      card.chart.setData(having.map((r, i) => ({
+        label: r.name, color: SERIES[slots.get(r.id)], ...(results[i][name] || { x: [], y: [] }),
+      })));
     });
-    put(chartsEl, chartToolbar(charts), ...sections.flat());
+    const part = { el: card.el, refresh, destroy() {
+      refresh.stop(); card.chart.destroy(); charts.splice(charts.indexOf(card.chart), 1); cards.delete(part);
+    } };
+    cards.add(part);
+    return part;
+  };
+  const makeSection = ([group]) => {
+    const grid = h("div", { class: "grid" });
+    return { el: h("div", {}, h("h2", {}, group || "Metrics"), grid),
+      update: ([, names]) => reconcile(grid, names, (n) => n, makeCard) };
+  };
+  function paintCharts(reload) {
+    chosen = runs.filter((r) => slots.has(r.id));
+    const names = [...new Set(chosen.flatMap((r) => r.metrics))].filter((n) => groupOf(n) !== "sys").sort();
+    const groups = chosen.length ? byGroup(names) : [];
+    toolbar.hidden = !groups.length;
+    if (groups.length) put(empty);
+    else put(empty, emptyState(chosen.length ? "The selected runs have not logged any metrics yet." : "Tick runs above to compare their metrics."));
+    reconcile(sections, groups, ([g]) => g, makeSection);
+    return reload ? Promise.all([...cards].map((c) => c.refresh())) : null;
   }
 
-  renderTable();
-  renderCharts();
-  put(view, 
-    h("div", { class: "head" }, h("h1", {}, project),
-      h("span", { class: "sub" }, `${total} run${total === 1 ? "" : "s"}`), hint, h("span", { class: "grow" }),
+  paintCounts();
+  paintRows();
+  paintCharts(false);
+  put(view,
+    h("div", { class: "head" }, h("h1", {}, project), count, hint, h("span", { class: "grow" }),
       (await who()).access !== "admin" ? null : h("button", { class: "danger", onclick: async () => {
         if (!confirm(`Delete project "${project}" and all ${total} of its runs? This cannot be undone.`)) return;
         await api(base, { method: "DELETE" });
@@ -373,38 +508,41 @@ async function viewProject(project) {
       h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "Run"), h("th", {}, "Status"), h("th", {}, "Started"),
         h("th", {}, "Duration"), configCols.map((k) => h("th", {}, k)))),
       tbody)),
-    total > runs.length ? h("p", { class: "muted" }, `Showing the ${runs.length} most recent runs.`) : null,
+    more,
     chartsEl);
 
   poll(async () => {
-    const before = JSON.stringify(runs.map((r) => [r.id, r.metrics.length]));
+    // Judged before the fetch, so a run that just finished gets its last points drawn.
+    const live = chosen.some((r) => r.status === "RUNNING");
     ({ runs, total } = await api(`${base}/runs`));
-    renderTable();
-    if (before !== JSON.stringify(runs.map((r) => [r.id, r.metrics.length]))) renderCharts();
-    else if (runs.some((r) => r.status === "RUNNING" && slots.has(r.id))) await Promise.all(refreshers.map((f) => f()));
+    paintCounts();
+    paintRows();
+    await paintCharts(live);
   });
 }
 
 const MEDIA = ["IMAGE", "AUDIO", "VIDEO", "TEXT", "ARTIFACT", "FILE"];
 const DATA = ["HISTOGRAM", "TABLE"];
 
-async function viewRun(id, tab) {
+async function viewRun(id, requested) {
   let run = await api(`/api/runs/${id}`);
   setCrumbs([run.project, `#/projects/${encodeURIComponent(run.project)}`], [run.name]);
 
   const kinds = (list) => run.series.filter((s) => list.includes(s.kind));
   const metricNames = () => run.series.filter((s) => s.kind === "METRIC").map((s) => s.name);
-  const tabs = [
+  const TABS = [
     ["charts", "Charts", () => true],
     ["system", "System", () => metricNames().some((n) => groupOf(n) === "sys")],
     ["media", "Media", () => kinds(MEDIA).length],
     ["logs", "Logs", () => run.log_lines],
     ["model", "Model", () => run.has_graph],
     ["overview", "Overview", () => true],
-  ].filter(([, , show]) => show());
-  if (!tabs.some(([k]) => k === tab)) tab = "charts";
+  ];
+  const available = () => TABS.filter(([, , show]) => show());
+  const tab = available().some(([k]) => k === requested) ? requested : "charts";
 
-  const status = h("span", {});
+  const badge = statusBadge(run);
+  const since = h("span", { class: "sub" });
   const stop = h("button", { onclick: async () => {
     if (!confirm("Stop this run? The training script is interrupted the next time it checks in.")) return;
     await api(`/api/runs/${id}/stop`, { method: "POST" });
@@ -412,86 +550,120 @@ async function viewRun(id, tab) {
   } }, "Stop run");
   const writable = await canWrite();
   const paintHead = () => {
-    put(status, statusBadge(run), " ", h("span", { class: "sub" }, `· started ${ago(run.created_at)} · ${runDuration(run)}`));
+    badge.update(run);
+    setText(since, `· started ${ago(run.created_at)} · ${runDuration(run)}`);
     stop.hidden = !writable || run.status !== "RUNNING";
   };
+  // Tabs appear as the run starts logging the things they show.
+  const tabbar = h("div", { class: "tabs", role: "tablist" });
+  const paintTabs = () => reconcile(tabbar, available(), ([k]) => k, ([k, label]) => ({
+    el: h("button", { role: "tab", "aria-selected": String(k === tab), onclick: () => (location.hash = `#/runs/${id}/${k}`) }, label),
+  }));
   paintHead();
+  paintTabs();
 
   const body = h("div");
-  put(view, 
-    h("div", { class: "head" }, h("h1", {}, run.name), status, h("span", { class: "grow" }), stop,
+  put(view,
+    h("div", { class: "head" }, h("h1", {}, run.name), badge.el, " ", since, h("span", { class: "grow" }), stop,
       !writable ? null : h("button", { class: "danger", onclick: async () => {
         if (!confirm(`Delete run "${run.name}" and everything it logged? This cannot be undone.`)) return;
         await api(`/api/runs/${id}`, { method: "DELETE" });
         location.hash = `#/projects/${encodeURIComponent(run.project)}`;
       } }, "Delete")),
-    h("div", { class: "tabs", role: "tablist" }, tabs.map(([k, label]) =>
-      h("button", { role: "tab", "aria-selected": String(k === tab), onclick: () => (location.hash = `#/runs/${id}/${k}`) }, label))),
-    body);
+    tabbar, body);
 
-  let refresh = async () => {};
-  if (tab === "charts") refresh = runCharts(run, body, (n) => groupOf(n) !== "sys", "step");
-  else if (tab === "system") refresh = runCharts(run, body, (n) => groupOf(n) === "sys", "time");
-  else if (tab === "media") refresh = runMedia(run, body);
-  else if (tab === "logs") refresh = await runLogs(run, body);
-  else if (tab === "model") await runModel(run, body);
+  // Each tab is a component: built once, then update(run, live) on every poll.
+  // Updates add what is new and redraw in place; nothing is torn down, so
+  // scroll positions, hover and steps picked by hand stay where they were.
+  let content = { update: async () => {} };
+  if (tab === "charts") content = runCharts(run, body, (n) => groupOf(n) !== "sys", "step");
+  else if (tab === "system") content = runCharts(run, body, (n) => groupOf(n) === "sys", "time");
+  else if (tab === "media") content = runMedia(run, body);
+  else if (tab === "logs") {
+    const more = await runLogs(run, body);
+    content = { update: (r, live) => (live ? more() : null) };
+  } else if (tab === "model") await runModel(run, body);
   else runOverview(run, body);
 
-  const shape = () => `${run.series.length}:${run.has_graph}:${!!run.log_lines}`;
   poll(async () => {
-    const live = run.status === "RUNNING";
-    const before = shape();
-    const next = await api(`/api/runs/${id}`);
-    const structural = (run = next, shape() !== before);
+    const live = run.status === "RUNNING";  // as of the last poll, so a run's final points still load
+    run = await api(`/api/runs/${id}`);
     paintHead();
-    if (structural && tab !== "logs") return route();  // new series appeared: rebuild
-    if (live) await refresh(run);
+    paintTabs();
+    await content.update(run, live);
   });
 }
 
+// The Charts and System tabs: a card per series, grouped by name prefix. A
+// series that shows up mid-run gets a card added; existing cards are kept.
 function runCharts(run, body, want, axis) {
-  const names = run.series.filter((s) => s.kind === "METRIC" && want(s.name)).map((s) => s.name);
-  const data = axis === "step" ? run.series.filter((s) => DATA.includes(s.kind)) : [];
-  if (!names.length && !data.length) {
-    put(body, emptyState(run.status === "RUNNING" ? "Waiting for the first metrics…" : "This run did not log any metrics."));
-    return async () => {};
-  }
   const charts = [];
-  const refreshers = [];
-  const sections = byGroup([...names, ...data.map((s) => s.name)]).map(([group, list]) => {
-    const grid = h("div", { class: "grid" });
-    for (const name of list) {
-      const series = data.find((s) => s.name === name);
-      if (series) {
-        const card = dataCard(run, series);
-        refreshers.push(lazily(card.el, card.load));
-        grid.append(card.el);
-        continue;
-      }
+  const toolbar = chartToolbar(charts);
+  const sections = h("div");
+  const empty = h("div");
+  put(body, toolbar, sections, empty);
+  const cards = new Set();
+
+  const makeCard = (series) => {
+    let part;
+    if (series.kind === "METRIC") {
+      const name = series.name;
       const card = chartCard(name);
       card.chart.setOptions({ axis, origin: run.created_at, unit: unitOf(name) });
       charts.push(card.chart);
-      const load = async () => {
+      const refresh = lazily(card.el, async () => {
         const r = await api(`/api/runs/${run.id}/metrics?${q([["name", name], ["points", 600], ["x", axis]])}`);
         const s = r[name] || { x: [], y: [] };
         card.chart.setData([{ label: name, color: SERIES[0], ...s }]);
-        card.latest.textContent = s.y.length ? card.chart.value(s.y[s.y.length - 1]) : "";
-        card.note.textContent = s.min ? `${s.count.toLocaleString()} points, averaged into ${s.x.length} buckets; band shows min–max` : "";
-      };
-      refreshers.push(lazily(card.el, load));
-      grid.append(card.el);
+        setText(card.latest, s.y.length ? card.chart.value(s.y[s.y.length - 1]) : "");
+        setText(card.note, s.min ? `${s.count.toLocaleString()} points, averaged into ${s.x.length} buckets; band shows min–max` : "");
+      });
+      part = { el: card.el, refresh, destroy() { refresh.stop(); card.chart.destroy(); charts.splice(charts.indexOf(card.chart), 1); } };
+    } else {
+      const card = dataCard(run, series);
+      const refresh = lazily(card.el, card.load);
+      part = { el: card.el, refresh, destroy() { refresh.stop(); card.destroy(); } };
     }
-    return [h("h2", {}, group || "Metrics"), grid];
-  });
-  put(body, charts.length ? chartToolbar(charts) : null, ...sections.flat());
-  return () => Promise.all(refreshers.map((f) => f()));
+    cards.add(part);
+    const destroy = part.destroy;
+    part.destroy = () => { destroy(); cards.delete(part); };
+    return part;
+  };
+  const makeSection = ([group]) => {
+    const grid = h("div", { class: "grid" });
+    return { el: h("div", {}, h("h2", {}, group || "Metrics"), grid),
+      update: ([, list]) => reconcile(grid, list, (s) => s.name, makeCard) };
+  };
+
+  const paint = (run) => {
+    const metrics = run.series.filter((s) => s.kind === "METRIC" && want(s.name));
+    const data = axis === "step" ? run.series.filter((s) => DATA.includes(s.kind)) : [];
+    const all = [...metrics, ...data];
+    const byName = new Map(all.map((s) => [s.name, s]));
+    const groups = byGroup(all.map((s) => s.name)).map(([g, names]) => [g, names.map((n) => byName.get(n))]);
+    toolbar.hidden = !metrics.length;
+    if (all.length) put(empty);
+    else put(empty, emptyState(run.status === "RUNNING" ? "Waiting for the first metrics…" : "This run did not log any metrics."));
+    reconcile(sections, groups, ([g]) => g, makeSection);
+  };
+  paint(run);
+  return {
+    update(run, live) {
+      paint(run);
+      return live ? Promise.all([...cards].map((c) => c.refresh())) : null;
+    },
+  };
 }
 
 // A stepped series (histograms, tables, media): one frame per logged step,
-// with a slider to move through them. Follows the newest step until moved.
+// with a slider to move through them. It follows the newest step until the
+// slider is moved, then holds that step. A frame is drawn only when the step
+// on screen changes, never because a poll brought the same data back.
 function stepped(render) {
   let items = [];
-  let pinned = false;
+  let follow = true;
+  let shown;
+  const id = (item) => item.id ?? `${item.step}:${item.time}`;
   const range = h("input", { type: "range", min: "0", max: "0", value: "0", "aria-label": "Step" });
   const label = h("span", { class: "num" });
   const el = h("div", { class: "slider" }, range, label);
@@ -499,72 +671,117 @@ function stepped(render) {
     const item = items[+range.value];
     el.hidden = items.length < 2;
     if (!item) return;
-    label.textContent = `step ${fmtStep(item.step)}`;
+    setText(label, `step ${fmtStep(item.step)}`);
+    if (id(item) === shown) return;
+    shown = id(item);
     render(item);
   };
-  range.addEventListener("input", () => { pinned = +range.value < items.length - 1; show(); });
+  range.addEventListener("input", () => { follow = +range.value === items.length - 1; show(); });
   return {
     el,
     set(next) {
-      const grew = next.length !== items.length;
+      const held = items[+range.value];
       items = next;
       range.max = String(Math.max(0, items.length - 1));
-      if (!pinned) range.value = range.max;
-      if (grew || !pinned) show();
+      if (follow || !held) range.value = range.max;
+      else {
+        // Long series are thinned on read, so the held step can drop out of
+        // the window; stay on the closest one that is still there.
+        let at = items.findIndex((it) => id(it) === id(held));
+        if (at < 0) at = items.reduce((best, it, i) =>
+          Math.abs(it.step - held.step) < Math.abs(items[best].step - held.step) ? i : best, 0);
+        range.value = String(at);
+      }
+      show();
     },
   };
 }
 
 function dataCard(run, series) {
-  const frame = h("div", {});
   const note = h("div", { class: "note" });
-  let canvas;
-  const steps = stepped((entry) => {
-    const d = entry.data || {};
-    if (series.kind === "HISTOGRAM") {
-      if (!canvas) {
-        canvas = h("canvas", { role: "img", "aria-label": `Histogram of ${series.name}` });
-        put(frame, canvas);
-      }
-      drawHistogram(canvas, d);
-    } else {
-      put(frame, dataTable(d));
-    }
-  });
-  const el = h("div", { class: "card chart" }, h("header", {}, h("span", { class: "title", title: series.name }, series.name),
-    h("span", { class: "latest" }, series.kind === "HISTOGRAM" ? "histogram" : "table")), frame, steps.el, note);
+  let frame, redraw = () => {}, ro;
+  if (series.kind === "HISTOGRAM") {
+    frame = h("canvas", { role: "img", "aria-label": `Histogram of ${series.name}` });
+    let last = null;
+    redraw = (d) => { last = d; drawHistogram(frame, d); };
+    ro = new ResizeObserver(() => last && drawHistogram(frame, last));
+    ro.observe(frame);
+  } else {
+    const table = dataTable();
+    frame = table.el;
+    redraw = table.update;
+  }
+  const steps = stepped((entry) => redraw(entry.data || {}));
+  const el = gridCard(series.name, "card chart",
+    h("span", { class: "latest" }, series.kind === "HISTOGRAM" ? "histogram" : "table"), frame, steps.el, note);
   const load = async () => {
     const r = await api(`/api/runs/${run.id}/data?${q([["name", series.name], ["limit", 64]])}`);
     steps.set(r.entries);
-    note.textContent = r.total > r.entries.length ? `showing ${r.entries.length} of ${r.total} logged steps` : "";
+    setText(note, r.total > r.entries.length ? `showing ${r.entries.length} of ${r.total} logged steps` : "");
   };
-  return { el, load };
+  return { el, load, destroy: () => ro && ro.disconnect() };
 }
 
-function dataTable(d) {
-  const rows = Array.isArray(d.table) ? d.table : [];
-  const cols = d.col || null;
-  const rowNames = d.row || null;
-  return h("div", { class: "tablewrap", style: "max-height:240px;overflow:auto" }, h("table", {},
-    cols ? h("thead", {}, h("tr", {}, rowNames ? h("th", {}) : null, cols.map((c) => h("th", {}, c.name)))) : null,
-    h("tbody", {}, rows.slice(0, 200).map((r, i) => h("tr", {},
-      rowNames ? h("th", {}, rowNames[i] ? rowNames[i].name : "") : null,
-      (Array.isArray(r) ? r : [r]).map((c) => h("td", { class: "num" }, typeof c === "number" ? fmt(c) : String(c))))))));
+// A logged mlop.Table. Numbers are right-aligned in tabular figures, text is
+// left-aligned and cut to one line; hovering a cut cell shows all of it (see
+// peek). The scroll box persists across steps, so moving the slider keeps the
+// rows and columns you were looking at in view.
+const TABLE_ROWS = 500;
+
+function dataTable() {
+  const scroller = h("div", { class: "datatable", tabindex: "0", role: "region", "aria-label": "Table" });
+  const note = h("div", { class: "note" });
+  const el = h("div", {}, scroller, note);
+  const update = (d) => {
+    const all = Array.isArray(d.table) ? d.table : [];
+    const rows = all.slice(0, TABLE_ROWS).map((r) => (Array.isArray(r) ? r : [r]));
+    const cols = Array.isArray(d.col) ? d.col : null;
+    const names = Array.isArray(d.row) ? d.row : null;
+    const width = Math.max(cols ? cols.length : 0, 0, ...rows.map((r) => r.length));
+    const numeric = Array.from({ length: width }, (_, j) =>
+      rows.some((r) => typeof r[j] === "number") && rows.every((r) => r[j] == null || typeof r[j] === "number"));
+    const span = Array.from({ length: width }, (_, j) => j);
+    const table = h("table", {},
+      cols ? h("thead", {}, h("tr", {},
+        names ? h("th", { class: "corner" }) : null,
+        span.map((j) => h("th", { class: numeric[j] ? "n clip" : "clip", scope: "col" }, cols[j] ? String(cols[j].name) : "")),
+        h("th", { class: "fill" }))) : null,
+      h("tbody", {}, rows.map((r, i) => h("tr", {},
+        names ? h("th", { class: "clip", scope: "row" }, names[i] ? String(names[i].name) : "") : null,
+        span.map((j) => tableCell(r[j], numeric[j])),
+        h("td", { class: "fill" })))));
+    const { scrollTop, scrollLeft } = scroller;
+    put(scroller, table);
+    scroller.scrollTop = scrollTop;
+    scroller.scrollLeft = scrollLeft;
+    setText(note, all.length > TABLE_ROWS ? `showing the first ${TABLE_ROWS} of ${all.length.toLocaleString()} rows` : "");
+  };
+  return { el, update };
+}
+
+function tableCell(v, numeric) {
+  const align = numeric ? "n" : "";
+  if (v == null) return h("td", { class: `${align} muted` }, "–");
+  if (typeof v === "number") {
+    const text = Number.isInteger(v) ? String(v) : fmt(v);
+    return h("td", { class: align || "num", "data-full": text === String(v) ? null : String(v) }, text);
+  }
+  const text = typeof v === "object" ? JSON.stringify(v) : String(v);
+  // Cells long enough to be cut get a tab stop, so the full text is reachable by keyboard too.
+  return h("td", { class: "clip", tabindex: text.length > 40 ? "0" : null }, text);
 }
 
 function runMedia(run, body) {
-  const list = run.series.filter((s) => MEDIA.includes(s.kind));
-  const refreshers = [];
+  const cards = new Set();
   const grid = h("div", { class: "grid" });
-  for (const series of list) {
+  const makeCard = (series) => {
     const frame = h("div", { class: "frame" });
     const caption = h("div", { class: "note" });
     let shown = null;
     const steps = stepped(async (f) => {
-      if (shown === f.id) return;
       shown = f.id;
       const url = `/api/files/${f.id}`;
-      caption.textContent = `${f.name} · ${bytes(f.size)}`;
+      setText(caption, `${f.name} · ${bytes(f.size)}`);
       if (series.kind === "IMAGE") put(frame, h("img", { src: url, alt: `${series.name} at step ${f.step}`, loading: "lazy" }));
       else if (series.kind === "AUDIO") put(frame, h("audio", { src: url, controls: true, preload: "metadata" }));
       else if (series.kind === "VIDEO") put(frame, h("video", { src: url, controls: true, preload: "metadata" }));
@@ -575,16 +792,25 @@ function runMedia(run, body) {
         if (shown === f.id) pre.textContent = await res.text();
       } else put(frame, h("a", { href: url, download: f.name }, `Download ${f.name}`));
     });
-    const el = h("div", { class: "card media" }, h("div", { class: "title" }, series.name), frame, steps.el, caption);
-    refreshers.push(lazily(el, async () => {
+    const el = gridCard(series.name, "card media", null, frame, steps.el, caption);
+    const refresh = lazily(el, async () => {
       const r = await api(`/api/runs/${run.id}/files?${q([["name", series.name]])}`);
       steps.set(r.files);
-      if (!r.files.length) caption.textContent = "upload in progress…";
-    }));
-    grid.append(el);
-  }
+      if (!r.files.length) setText(caption, "upload in progress…");
+    });
+    const part = { el, refresh, destroy() { refresh.stop(); cards.delete(part); } };
+    cards.add(part);
+    return part;
+  };
+  const paint = (run) => reconcile(grid, run.series.filter((s) => MEDIA.includes(s.kind)), (s) => s.name, makeCard);
   put(body, grid);
-  return () => Promise.all(refreshers.map((f) => f()));
+  paint(run);
+  return {
+    update(run, live) {
+      paint(run);
+      return live ? Promise.all([...cards].map((c) => c.refresh())) : null;
+    },
+  };
 }
 
 async function runLogs(run, body) {
@@ -818,11 +1044,61 @@ async function viewQuery() {
         h("ul", { class: "cols" }, schema.notes.map((n) => h("li", { class: "muted" }, n))))));
 }
 
+// -- peek: the whole of a cut-off cell ----------------------------------------
+// Any element with class "clip" that is cut off, or that carries data-full
+// (e.g. a number shown rounded), opens a popover with its full text on hover
+// or keyboard focus. The popover stays while the pointer is over it, so long
+// text can be scrolled, selected and copied. Wired once, by delegation, so
+// cells drawn later need nothing of their own.
+const peek = (() => {
+  const box = document.getElementById("peek");
+  let owner = null, showing = 0, hiding = 0;
+  const wants = (el) => el && (el.dataset.full != null || el.scrollWidth > el.clientWidth + 1);
+  const cancel = () => { clearTimeout(showing); clearTimeout(hiding); };
+  function show(el) {
+    cancel();
+    owner = el;
+    box.textContent = el.dataset.full ?? el.textContent;
+    box.hidden = false;
+    box.scrollTop = 0;
+    const r = el.getBoundingClientRect();
+    const w = box.offsetWidth, ht = box.offsetHeight;
+    const below = r.bottom + 4, above = r.top - ht - 4;
+    box.style.left = `${Math.max(8, Math.min(r.left, innerWidth - w - 8))}px`;
+    box.style.top = `${below + ht <= innerHeight - 8 || above < 8 ? Math.max(8, Math.min(below, innerHeight - ht - 8)) : above}px`;
+  }
+  function hide() {
+    cancel();
+    owner = null;
+    box.hidden = true;
+  }
+  const later = () => { clearTimeout(hiding); hiding = setTimeout(hide, 180); };
+  document.addEventListener("pointerover", (e) => {
+    if (box.contains(e.target)) return clearTimeout(hiding);
+    const el = e.target.closest && e.target.closest(".clip, [data-full]");
+    if (el && el === owner) return clearTimeout(hiding);
+    clearTimeout(showing);
+    if (wants(el)) showing = setTimeout(() => show(el), owner ? 0 : 280);
+    else if (owner) later();
+  });
+  document.addEventListener("pointerleave", () => owner && later());
+  document.addEventListener("focusin", (e) => {
+    const el = e.target.closest && e.target.closest(".clip, [data-full]");
+    if (wants(el)) show(el);
+    else if (owner && !box.contains(e.target)) hide();
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && owner) hide(); });
+  // The popover is pinned to where the cell was; once the page moves, it is wrong.
+  document.addEventListener("scroll", (e) => { if (owner && !box.contains(e.target)) hide(); }, true);
+  return { hide };
+})();
+
 // -- router ------------------------------------------------------------------
 async function route() {
   const mine = ++generation;
   cleanups.splice(0).forEach((fn) => fn());
   document.getElementById("tooltip").hidden = true;
+  peek.hide();
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
   const mount = (view = h("div"));
   // The current page stays (faded) until the next one has drawn something,

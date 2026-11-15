@@ -147,26 +147,65 @@ td.clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-spa
 .toolbar input[type=range] { width: 120px; }
 
 .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); }
+/* A card the reader expanded takes the whole row and grows taller. */
+.grid > .wide { grid-column: 1 / -1; }
 .chart { padding: 12px 14px 8px; min-width: 0; }
-.chart header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
-.chart .title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis;
-                white-space: nowrap; }
-.chart .latest { margin-left: auto; color: var(--text-2); font-size: 12px; white-space: nowrap; }
+.cardhead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; min-height: 24px; }
+.cardhead .title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis;
+                   white-space: nowrap; min-width: 0; }
+.cardhead .latest { color: var(--text-2); font-size: 12px; white-space: nowrap; }
+.cardhead button.icon { height: 24px; width: 24px; padding: 0; flex: none; border-color: transparent;
+                        background: none; color: var(--text-3); }
+.cardhead button.icon:hover, .cardhead button.icon[aria-pressed=true] { color: var(--text); border-color: var(--line); }
 .chart canvas { display: block; width: 100%; height: 210px; cursor: crosshair; }
+.chart.wide canvas { height: 360px; }
 .chart .note { color: var(--text-3); font-size: 11.5px; min-height: 16px; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-2);
           margin: 2px 0 6px; }
+
+/* Logged tables. Columns hug their content (the empty .fill column takes the
+   slack), numbers sit right in tabular figures, text sits left on one line
+   and is cut with an ellipsis; peek shows the rest. Header row and row labels
+   stay put while the body scrolls. */
+.datatable { max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: 6px;
+             font-size: 12.5px; }
+.wide .datatable { max-height: 70vh; }
+.datatable table { width: 100%; }
+.datatable th, .datatable td { padding: 5px 10px; white-space: nowrap; vertical-align: top;
+                               text-align: left; border-bottom: 1px solid var(--grid); }
+.datatable tr:last-child > * { border-bottom: 0; }
+.datatable .n { text-align: right; font-variant-numeric: tabular-nums; }
+.datatable .clip { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.wide .datatable .clip { max-width: 640px; }
+.datatable .fill { width: 100%; padding: 0; }
+.datatable thead th { position: sticky; top: 0; z-index: 1; background: var(--surface);
+                      border-bottom: 0; box-shadow: inset 0 -1px var(--line); }
+.datatable tbody th { position: sticky; left: 0; background: var(--surface); color: var(--text-2);
+                      font-size: 12px; max-width: 200px; box-shadow: inset -1px 0 var(--line); }
+.datatable thead th.corner { left: 0; z-index: 2; box-shadow: inset -1px -1px var(--line); }
+.datatable tbody tr:hover { background: none; }
+.datatable tbody tr:hover > * { background: color-mix(in srgb, var(--text) 4%, var(--surface)); }
+.datatable td:focus-visible, .datatable th:focus-visible { outline-offset: -2px; }
+
+/* The full text of a cut-off cell (see peek in app.js). */
+#peek {
+  position: fixed; z-index: 21; background: var(--raised); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.14); font-size: 12.5px; line-height: 1.5;
+  max-width: min(560px, calc(100vw - 16px)); max-height: 50vh; overflow: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 
 .slider { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-2);
           margin-top: 6px; }
 .slider input { flex: 1; min-width: 0; }
 .media { padding: 12px 14px; min-width: 0; }
-.media .title { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
 .media img, .media video { max-width: 100%; max-height: 420px; display: block; margin: 0 auto;
                            border-radius: 4px; image-rendering: auto; }
 .media img { min-height: 160px; object-fit: contain; image-rendering: pixelated; }
 .media audio { width: 100%; }
 .media .frame { background: var(--page); border-radius: 6px; padding: 8px; min-height: 60px; }
+.media.wide img, .media.wide video { max-height: 75vh; }
 .media pre { max-height: 300px; overflow: auto; }
 
 #tooltip {
