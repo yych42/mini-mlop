@@ -557,7 +557,9 @@ class Handler(BaseHTTPRequestHandler):
                 sys_names = [n for n in metrics if _group(n) == "sys"]
                 media = [n for n, k in kinds.items() if k in MEDIA_KINDS]
                 if tab == "system" and sys_names:
-                    add_series(run, _screenful(sys_names), 600, "time")
+                    # Numbered sets (a series per core) share one card there,
+                    # so a screenful of cards is more series than elsewhere.
+                    add_series(run, sys_names[:PRELOAD_CARDS * 3], 600, "time")
                 elif tab == "media" and media:
                     for name in media[:12]:
                         add(f"/api/runs/{run_id}/files?name={_enc(name)}")

@@ -1,5 +1,7 @@
 // Canvas charts for the mini-mlop UI: a multi-series line chart with a crosshair
-// readout, and a histogram. Small on purpose, so nothing has to be bundled.
+// readout, and a histogram. A series is {label, color, x, y, min?, max?}; it
+// may also be `quiet` (a hairline with no readout row) or `hidden` (a readout
+// row with no line), and its label may be a function of the point's index. Small on purpose, so nothing has to be bundled.
 
 const tooltip = document.getElementById("tooltip");
 const M = { left: 58, right: 12, top: 8, bottom: 24 };
@@ -178,7 +180,8 @@ export class LineChart {
     for (const s of series) {
       x0 = Math.min(x0, s.x[0]);
       x1 = Math.max(x1, s.x[s.x.length - 1]);
-      const banded = s.min && !this.options.smooth;
+      if (s.hidden) continue;
+      const banded = s.min && !s.quiet && !this.options.smooth;
       for (let i = 0; i < s.ys.length; i++) {
         if (!s.ok(i)) continue;
         const lo = banded && (!logY || s.min[i] > 0) ? s.min[i] : s.ys[i];
@@ -236,10 +239,13 @@ export class LineChart {
     ctx.rect(M.left, M.top - 2, pw, ph + 4);
     ctx.clip();
     for (const s of series) {
-      const color = resolveColor(el, s.color) || ink;
+      if (s.hidden) continue;  // in the readout only
+      // A quiet series is one of many of a kind: a hairline in neutral ink,
+      // there to show the spread, not to be told apart from its neighbours.
+      const color = s.quiet ? text2 : resolveColor(el, s.color) || ink;
       // min–max envelope of downsampled buckets: raw extremes, so it is only
       // shown while the line itself is unsmoothed
-      if (s.min && !this.options.smooth) {
+      if (s.min && !s.quiet && !this.options.smooth) {
         ctx.beginPath();
         let started = false;
         for (let i = 0; i < s.x.length; i++) {
@@ -258,7 +264,8 @@ export class LineChart {
         ctx.globalAlpha = 1;
       }
       ctx.beginPath();
-      ctx.lineWidth = 2;
+      ctx.lineWidth = s.quiet ? 1 : 2;
+      ctx.globalAlpha = s.quiet ? 0.45 : 1;
       ctx.lineJoin = "round";
       ctx.strokeStyle = color;
       let pen = false;
@@ -268,7 +275,8 @@ export class LineChart {
         pen = true;
       }
       ctx.stroke();
-      if (s.x.length === 1 && s.ok(0)) {
+      ctx.globalAlpha = 1;
+      if (s.x.length === 1 && s.ok(0) && !s.quiet) {
         ctx.beginPath();
         ctx.arc(X(s.x[0]), Y(s.ys[0]), 4, 0, Math.PI * 2);
         ctx.fillStyle = color;
@@ -285,7 +293,7 @@ export class LineChart {
       const surface = cssVar(el, "--surface");
       for (const s of series) {
         const i = nearest(s.x, this.hoverX);
-        if (i < 0 || !s.ok(i)) continue;
+        if (i < 0 || !s.ok(i) || s.quiet || s.hidden) continue;
         ctx.beginPath();
         ctx.arc(X(s.x[i]), Y(s.ys[i]), 4, 0, Math.PI * 2);
         ctx.fillStyle = resolveColor(el, s.color) || ink;
@@ -338,17 +346,18 @@ export class LineChart {
     const rows = [head];
     for (const s of this.plotted()) {
       const i = nearest(s.x, this.hoverX);
-      if (i < 0) continue;
+      if (i < 0 || s.quiet) continue;
       const row = document.createElement("div");
       row.className = "row";
       const key = document.createElement("span");
       key.className = "swatch";
+      if (s.hidden) key.style.visibility = "hidden";  // no line of its own to key to
       key.style.background = resolveColor(this.canvas, s.color) || "";
       const value = document.createElement("b");
       value.textContent = this.value(s.ys[i]);
       const name = document.createElement("span");
       name.className = "n";
-      name.textContent = s.label;
+      name.textContent = typeof s.label === "function" ? s.label(i) : s.label;
       row.append(key, value, name);
       rows.push(row);
     }

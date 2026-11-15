@@ -385,6 +385,72 @@ function unitOf(name) {
   return null;
 }
 
+// Hardware comes in numbered sets: twenty cores, four GPUs of one model. A
+// series named with a numbered part ("sys/cpu.percentage.7") belongs with its
+// siblings on one card, named without the number.
+function familyOf(name) {
+  const parts = name.split(".");
+  for (let i = parts.length - 1; i > 0; i--) {
+    if (/^\d+$/.test(parts[i])) {
+      return { family: [...parts.slice(0, i), ...parts.slice(i + 1)].join("."), member: +parts[i] };
+    }
+  }
+  return null;
+}
+
+// Folds each numbered set among `series` into one entry with `members`, in
+// the place of its first member. A lone numbered series stays as it is.
+function inFamilies(series) {
+  const taken = new Set(series.map((s) => s.name)), sets = new Map();
+  for (const s of series) {
+    const f = familyOf(s.name);
+    if (!f || taken.has(f.family)) continue;
+    if (!sets.has(f.family)) sets.set(f.family, []);
+    sets.get(f.family).push({ name: s.name, n: f.member });
+  }
+  const out = [], done = new Set();
+  for (const s of series) {
+    const f = familyOf(s.name), members = f && sets.get(f.family);
+    if (!members || members.length < 2) { out.push(s); continue; }
+    if (done.has(f.family)) continue;
+    done.add(f.family);
+    members.sort((a, b) => a.n - b.n);
+    out.push({ kind: s.kind, name: f.family, members, key: `${f.family}#${members.map((m) => m.n)}` });
+  }
+  return out;
+}
+
+// Up to this many of a set are drawn as lines of their own, each in a colour;
+// beyond it nobody can tell twenty colours apart, so the card shows the
+// average over hairlines of every member.
+const TELL_APART = 4;
+
+// What a set's members did together, point by point: their average, and the
+// highest and lowest of them with which member that was.
+function together(list, members) {
+  const base = list.reduce((a, b) => (b.x.length > a.x.length ? b : a));
+  const n = base.x.length;
+  const avg = new Array(n), hi = new Array(n), lo = new Array(n), hiAt = new Array(n), loAt = new Array(n);
+  const at = (s, x) => {  // index of the point of s nearest x
+    let a = 0, b = s.x.length - 1;
+    while (b - a > 1) { const m = (a + b) >> 1; if (s.x[m] < x) a = m; else b = m; }
+    return Math.abs(s.x[a] - x) <= Math.abs(s.x[b] - x) ? a : b;
+  };
+  for (let i = 0; i < n; i++) {
+    let sum = 0, count = 0;
+    hi[i] = -Infinity; lo[i] = Infinity;
+    list.forEach((s, j) => {
+      if (!s.x.length) return;
+      const v = s.y[s.x.length === n ? i : at(s, base.x[i])];
+      sum += v; count++;
+      if (v > hi[i]) { hi[i] = v; hiAt[i] = members[j].n; }
+      if (v < lo[i]) { lo[i] = v; loAt[i] = members[j].n; }
+    });
+    avg[i] = sum / count;
+  }
+  return { x: base.x, avg, hi, lo, hiAt, loAt };
+}
+
 function emptyState(title, ...more) {
   return h("div", { class: "card empty" }, h("div", {}, title), ...more);
 }
@@ -869,27 +935,70 @@ function runCharts(run, body, want, axis) {
     let part;
     if (series.kind === "METRIC") {
       const name = series.name;
+      // One series, or a numbered set of them on one card.
+      const members = series.members || [{ name }];
       const card = chartCard(name);
       card.chart.setOptions({ axis, origin: run.created_at, unit: unitOf(name) });
       charts.push(card.chart);
-      const draw = (s) => {
+      const bucketed = (s) => (s.min ? `${s.count.toLocaleString()} points, averaged into ${s.x.length} buckets` : "");
+      const drawOne = (s) => {
         card.chart.setData([{ label: name, color: SERIES[0], ...s }]);
         setText(card.latest, s.y.length ? card.chart.value(s.y[s.y.length - 1]) : "");
-        setText(card.note, s.min ? `${s.count.toLocaleString()} points, averaged into ${s.x.length} buckets; band shows min–max` : "");
+        setText(card.note, s.min ? `${bucketed(s)}; band shows min–max` : "");
+      };
+      const drawFew = (list) => {
+        card.chart.setData(list.map((s, i) => ({ label: `#${members[i].n}`, color: SERIES[i], x: s.x, y: s.y })));
+        setText(card.latest, "");
+        if (!card.note.firstChild || card.note.firstChild.nodeType !== 1) {
+          put(card.note, h("div", { class: "legend" }, ...members.map((m, i) =>
+            h("span", {}, h("span", { class: "swatch", style: `background: var(${SERIES[i]})` }), `#${m.n}`))));
+        }
+      };
+      const drawMany = (list) => {
+        const all = together(list, members);
+        const last = all.x.length - 1, value = (v) => card.chart.value(v);
+        card.chart.setData([
+          ...list.map((s) => ({ quiet: true, x: s.x, y: s.y })),
+          { label: "average", color: SERIES[0], x: all.x, y: all.avg },
+          { hidden: true, label: (i) => `highest (#${all.hiAt[i]})`, x: all.x, y: all.hi },
+          { hidden: true, label: (i) => `lowest (#${all.loAt[i]})`, x: all.x, y: all.lo },
+        ]);
+        setText(card.latest, last < 0 ? "" : `avg ${value(all.avg[last])} · max ${value(all.hi[last])}`);
+        const note = bucketed(list[0]);
+        setText(card.note, `#${members[0].n}–#${members[members.length - 1].n}: `
+          + `a thin line each, their average in bold${note ? `; ${note}` : ""}`);
+      };
+      const draw = (list) => {
+        if (!series.members) return drawOne(list[0]);
+        if (!list.some((s) => s.x.length)) return card.chart.setData([]);
+        return members.length <= TELL_APART ? drawFew(list) : drawMany(list);
       };
       let drawn = false;
+      // Members asked for in one turn go out as one request.
+      const read = () => Promise.all(members.map((m) => reader.read(m.name, now))).then(draw);
       const refresh = lazily(card.el, async () => {
-        const read = () => reader.read(name, now).then(draw);
         if (drawn) return read();
         // First time on screen: draw what is already here, and only wait on
         // the server when there is nothing. A live run catches up behind it.
-        const held = reader.held(name, now);
+        const held = members.map((m) => reader.held(m.name, now));
         drawn = true;
-        if (!held) return read();
-        draw(held.s);
-        if (!held.current && !held.recent) read().catch(handleError);
+        if (!held.every(Boolean)) return read();
+        draw(held.map((e) => e.s));
+        if (!held.every((e) => e.current || e.recent)) read().catch(handleError);
       });
-      part = { el: card.el, refresh, redraw: (s) => drawn && draw(s),
+      // Points that arrived for one member: the whole card is drawn again
+      // from what is held, once however many members the event touched.
+      let pending = false;
+      const redraw = () => {
+        if (!drawn || pending) return;
+        pending = true;
+        queueMicrotask(() => {
+          pending = false;
+          const held = members.map((m) => reader.held(m.name, now));
+          if (held.every(Boolean)) draw(held.map((e) => e.s));
+        });
+      };
+      part = { el: card.el, refresh, redraw, names: members.map((m) => m.name),
         destroy() { refresh.stop(); card.chart.destroy(); charts.splice(charts.indexOf(card.chart), 1); } };
     } else {
       const card = dataCard(() => now, series);
@@ -897,15 +1006,20 @@ function runCharts(run, body, want, axis) {
       part = { el: card.el, refresh, destroy() { refresh.stop(); card.destroy(); } };
     }
     cards.add(part);
-    byName.set(series.name, part);
+    const names = part.names || [series.name];
+    names.forEach((n) => byName.set(n, part));
     const destroy = part.destroy;
-    part.destroy = () => { destroy(); cards.delete(part); byName.delete(series.name); };
+    part.destroy = () => {
+      destroy();
+      cards.delete(part);
+      names.forEach((n) => byName.get(n) === part && byName.delete(n));
+    };
     return part;
   };
   const makeSection = ([group]) => {
     const grid = h("div", { class: "grid" });
     return { el: h("div", {}, h("h2", {}, group || "Metrics"), grid),
-      update: ([, list]) => reconcile(grid, list, (s) => s.name, makeCard) };
+      update: ([, list]) => reconcile(grid, list, (s) => s.key || s.name, makeCard) };
   };
   // What the live stream says about this run's series.
   const event = (ev) => {
@@ -913,7 +1027,7 @@ function runCharts(run, body, want, axis) {
       for (const [name, rows] of Object.entries(ev.points)) {
         const got = reader.append(name, rows), part = byName.get(name);
         if (!got || !part) continue;
-        if (got.reread) part.refresh().catch(handleError); else part.redraw(got.s);
+        if (got.reread) part.refresh().catch(handleError); else part.redraw();
       }
     } else if (ev.type === "data") {
       for (const name of ev.names) {
@@ -925,7 +1039,8 @@ function runCharts(run, body, want, axis) {
 
   const paint = (run) => {
     now = run;
-    const metrics = run.series.filter((s) => s.kind === "METRIC" && want(s.name));
+    let metrics = run.series.filter((s) => s.kind === "METRIC" && want(s.name));
+    if (axis === "time") metrics = inFamilies(metrics);  // the System tab
     const data = axis === "step" ? run.series.filter((s) => DATA.includes(s.kind)) : [];
     const all = [...metrics, ...data];
     const byName = new Map(all.map((s) => [s.name, s]));
