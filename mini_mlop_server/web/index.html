@@ -7,6 +7,11 @@
 <title>mini-mlop</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
+<!-- app.js imports these; asking now fetches them alongside it instead of after it. -->
+<link rel="modulepreload" href="app.js">
+<link rel="modulepreload" href="chart.js">
+<link rel="modulepreload" href="loading.js">
+<link rel="modulepreload" href="agent.js">
 </head>
 <body>
 <header id="top">

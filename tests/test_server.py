@@ -220,6 +220,24 @@ def test_logs_and_structured_data(api):
     assert h["kind"] == "HISTOGRAM" and h["total"] == 200
     steps = [e["step"] for e in h["entries"]]
     assert len(steps) == 10 and steps[0] == 0 and steps[-1] == 199
+    assert all("data" in e and "id" in e for e in h["entries"])  # no budget: every body
+
+    # A budget fills bodies newest first; the newest always comes, even alone over budget.
+    _, h = api.get(f"/api/runs/{run_id}/data?name=h&limit=10&budget=1")
+    with_body = [e["step"] for e in h["entries"] if "data" in e]
+    assert with_body == [199]
+    _, h = api.get(f"/api/runs/{run_id}/data?name=h&limit=10&budget=100000")
+    assert all("data" in e for e in h["entries"])
+
+    # `after` skips bodies the caller already has; `entry` fetches one.
+    newest = h["entries"][-1]["id"]
+    _, h = api.get(f"/api/runs/{run_id}/data?name=h&limit=10&after={newest}")
+    assert len(h["entries"]) == 10 and not any("data" in e for e in h["entries"])
+    first = h["entries"][0]
+    _, one = api.get(f"/api/runs/{run_id}/data?name=h&entry={first['id']}")
+    assert one["entry"]["step"] == 0 and one["entry"]["data"]["freq"] == [0]
+    status, _ = api.get(f"/api/runs/{run_id}/data?name=h&entry=999999")
+    assert status == 404
 
 
 # -- files -------------------------------------------------------------------

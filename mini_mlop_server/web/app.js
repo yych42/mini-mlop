@@ -119,9 +119,9 @@ async function api(path, opts = {}) {
 }
 
 // Who is signed in: {auth, key, access: "read" | "write" | "admin", project}.
+// The request itself is cached, so every caller shares one fetch.
 let session = null;
-const who = async () => (session ??= await api("/api/me"));
-const canWrite = async () => (await who()).access !== "read";
+const who = () => (session ??= api("/api/me").catch((e) => { session = null; throw e; }));
 
 const q = (params) =>
   params.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
@@ -221,14 +221,53 @@ function emptyState(title, ...more) {
   return h("div", { class: "card empty" }, h("div", {}, title), ...more);
 }
 
+// Shows the loading sweep in the top bar until `promise` settles. For loads
+// the reader is waiting on (a card's first data, a step they picked), not for
+// background refreshes, which would keep it sweeping forever on a live run.
+function track(promise) {
+  loading.begin();
+  return Promise.resolve(promise).finally(loading.end);
+}
+
+// Requests made in the same turn of the event loop go out as one call:
+// `fetchMany(keys)` gets every key asked for (in chunks of `max`) and
+// returns an object by key. Cards that come into view together, and every
+// visible card on a poll, then cost one round trip instead of one each,
+// which is what matters behind a tunnel where a round trip is most of the
+// cost.
+function batched(fetchMany, max = 40) {
+  let queue = null;
+  const flush = (waiting) => {
+    const keys = [...waiting.keys()];
+    for (let i = 0; i < keys.length; i += max) {
+      const chunk = keys.slice(i, i + max);
+      fetchMany(chunk).then(
+        (out) => chunk.forEach((k) => waiting.get(k).forEach((p) => p.resolve(out[k]))),
+        (e) => chunk.forEach((k) => waiting.get(k).forEach((p) => p.reject(e))));
+    }
+  };
+  return (key) => new Promise((resolve, reject) => {
+    if (!queue) {
+      const waiting = (queue = new Map());
+      setTimeout(() => { queue = null; flush(waiting); });
+    }
+    if (!queue.has(key)) queue.set(key, []);
+    queue.get(key).push({ resolve, reject });
+  });
+}
+
 // Run work only for cards that are on screen: a run with hundreds of series
-// should cost what the visible dozen cost.
+// should cost what the visible dozen cost. A card's first load is tracked.
 function lazily(el, load) {
-  let visible = false;
+  let visible = false, loaded = false;
   const io = new IntersectionObserver(
     (entries) => {
       visible = entries[entries.length - 1].isIntersecting;
-      if (visible) load().catch(handleError);
+      if (!visible) return;
+      const p = load();
+      if (!loaded) track(p);
+      loaded = true;
+      p.catch(handleError);
     },
     { rootMargin: "300px" },
   );
@@ -374,7 +413,7 @@ async function viewProjects() {
 async function viewProject(project) {
   setCrumbs([project]);
   const base = `/api/projects/${encodeURIComponent(project)}`;
-  let { runs, total } = await api(`${base}/runs`);
+  let [{ runs, total }, me] = await Promise.all([api(`${base}/runs`), who()]);
   // Colour belongs to a run for as long as it stays selected, so ticking
   // another run never repaints the ones already on the charts.
   const slots = new Map();
@@ -420,7 +459,7 @@ async function viewProject(project) {
     } else slots.delete(id);
     hint.textContent = "";
     paintRows();
-    paintCharts(true);
+    track(paintCharts(true)).catch(handleError);
   };
   const makeRow = (r) => {
     const box = h("input", { type: "checkbox", "aria-label": `Compare ${r.name}`, onchange: () => toggle(r.id, box) });
@@ -458,6 +497,13 @@ async function viewProject(project) {
   const chartsEl = h("div", {}, toolbar, sections, empty);
   const cards = new Set();
   let chosen = [];
+  // One batched reader per run: all of a run's charts arrive in one request.
+  const readers = new Map();
+  const metric = (runId, name) => {
+    if (!readers.has(runId)) readers.set(runId, batched((names) =>
+      api(`/api/runs/${runId}/metrics?${q([...names.map((n) => ["name", n]), ["points", 400]])}`)));
+    return readers.get(runId)(name);
+  };
   const makeCard = (name) => {
     const card = chartCard(name);
     charts.push(card.chart);
@@ -465,11 +511,10 @@ async function viewProject(project) {
     const refresh = lazily(card.el, async () => {
       const mine = ++latest;
       const having = chosen.filter((r) => r.metrics.includes(name));
-      const results = await Promise.all(having.map((r) =>
-        api(`/api/runs/${r.id}/metrics?${q([["name", name], ["points", 400]])}`)));
+      const results = await Promise.all(having.map((r) => metric(r.id, name)));
       if (mine !== latest) return;
       card.chart.setData(having.map((r, i) => ({
-        label: r.name, color: SERIES[slots.get(r.id)], ...(results[i][name] || { x: [], y: [] }),
+        label: r.name, color: SERIES[slots.get(r.id)], ...(results[i] || { x: [], y: [] }),
       })));
     });
     const part = { el: card.el, refresh, destroy() {
@@ -499,7 +544,7 @@ async function viewProject(project) {
   paintCharts(false);
   put(view,
     h("div", { class: "head" }, h("h1", {}, project), count, hint, h("span", { class: "grow" }),
-      (await who()).access !== "admin" ? null : h("button", { class: "danger", onclick: async () => {
+      me.access !== "admin" ? null : h("button", { class: "danger", onclick: async () => {
         if (!confirm(`Delete project "${project}" and all ${total} of its runs? This cannot be undone.`)) return;
         await api(base, { method: "DELETE" });
         location.hash = "#/";
@@ -525,7 +570,7 @@ const MEDIA = ["IMAGE", "AUDIO", "VIDEO", "TEXT", "ARTIFACT", "FILE"];
 const DATA = ["HISTOGRAM", "TABLE"];
 
 async function viewRun(id, requested) {
-  let run = await api(`/api/runs/${id}`);
+  let [run, me] = await Promise.all([api(`/api/runs/${id}`), who()]);
   setCrumbs([run.project, `#/projects/${encodeURIComponent(run.project)}`], [run.name]);
 
   const kinds = (list) => run.series.filter((s) => list.includes(s.kind));
@@ -548,7 +593,7 @@ async function viewRun(id, requested) {
     await api(`/api/runs/${id}/stop`, { method: "POST" });
     route();
   } }, "Stop run");
-  const writable = await canWrite();
+  const writable = me.access !== "read";
   const paintHead = () => {
     badge.update(run);
     setText(since, `· started ${ago(run.created_at)} · ${runDuration(run)}`);
@@ -603,6 +648,8 @@ function runCharts(run, body, want, axis) {
   const empty = h("div");
   put(body, toolbar, sections, empty);
   const cards = new Set();
+  const metric = batched((names) =>
+    api(`/api/runs/${run.id}/metrics?${q([...names.map((n) => ["name", n]), ["points", 600], ["x", axis]])}`));
 
   const makeCard = (series) => {
     let part;
@@ -612,8 +659,7 @@ function runCharts(run, body, want, axis) {
       card.chart.setOptions({ axis, origin: run.created_at, unit: unitOf(name) });
       charts.push(card.chart);
       const refresh = lazily(card.el, async () => {
-        const r = await api(`/api/runs/${run.id}/metrics?${q([["name", name], ["points", 600], ["x", axis]])}`);
-        const s = r[name] || { x: [], y: [] };
+        const s = (await metric(name)) || { x: [], y: [] };
         card.chart.setData([{ label: name, color: SERIES[0], ...s }]);
         setText(card.latest, s.y.length ? card.chart.value(s.y[s.y.length - 1]) : "");
         setText(card.note, s.min ? `${s.count.toLocaleString()} points, averaged into ${s.x.length} buckets; band shows min–max` : "");
@@ -711,11 +757,34 @@ function dataCard(run, series) {
     frame = table.el;
     redraw = table.update;
   }
-  const steps = stepped((entry) => redraw(entry.data || {}));
+  // Bodies can be large (a table with long text is easily 100 KB a step), so
+  // a load asks only for the ones it lacks, newest first within a budget;
+  // a step picked on the slider that is not here yet is fetched on its own.
+  const bodies = new Map();
+  let newest = 0, wanted = null;
+  const steps = stepped((entry) => {
+    wanted = entry.id;
+    if (bodies.has(entry.id)) return redraw(bodies.get(entry.id) || {});
+    frame.setAttribute("aria-busy", "true");
+    track(api(`/api/runs/${run.id}/data?${q([["name", series.name], ["entry", entry.id]])}`))
+      .then((r) => {
+        bodies.set(entry.id, r.entry.data);
+        if (wanted === entry.id) redraw(r.entry.data || {});
+      })
+      .catch(handleError)
+      .finally(() => { if (wanted === entry.id) frame.removeAttribute("aria-busy"); });
+  });
   const el = gridCard(series.name, "card chart",
     h("span", { class: "latest" }, series.kind === "HISTOGRAM" ? "histogram" : "table"), frame, steps.el, note);
   const load = async () => {
-    const r = await api(`/api/runs/${run.id}/data?${q([["name", series.name], ["limit", 64]])}`);
+    const r = await api(`/api/runs/${run.id}/data?${q([["name", series.name], ["limit", 64],
+      ["budget", 262144], ["after", newest]])}`);
+    const ids = new Set(r.entries.map((e) => e.id));
+    for (const id of bodies.keys()) if (!ids.has(id)) bodies.delete(id);
+    for (const e of r.entries) {
+      if ("data" in e) bodies.set(e.id, e.data);
+      newest = Math.max(newest, e.id);
+    }
     steps.set(r.entries);
     setText(note, r.total > r.entries.length ? `showing ${r.entries.length} of ${r.total} logged steps` : "");
   };
@@ -1124,7 +1193,10 @@ async function route() {
     put(root, mount);
     put(view, emptyState(e.message, h("p", {}, h("a", { href: "#/" }, "Back to projects"))));
   } finally {
-    loading.end();
+    // Hand over to the cards: they start their first loads when they are
+    // seen on screen, a frame or two after the view is attached. Ending a
+    // little later keeps the sweep going from page to data without a break.
+    requestAnimationFrame(() => requestAnimationFrame(() => loading.end()));
     if (mine === generation) root.removeAttribute("aria-busy");
   }
 }

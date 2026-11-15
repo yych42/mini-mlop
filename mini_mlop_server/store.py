@@ -989,41 +989,67 @@ class Store:
                 }
         return out
 
-    def read_data(self, run_id, name, limit=64):
-        """Entries of a structured series, evenly thinned to `limit` steps."""
+    def read_data(self, run_id, name, limit=64, budget=None, after=0, entry=None):
+        """Entries of a structured series, evenly thinned to `limit` steps.
+
+        Every entry carries its id, step and time. Bodies (a histogram, a
+        whole table) can be large, so a caller that only shows one at a time
+        can ask for less: with `budget` (bytes), bodies are filled newest
+        first until the budget is spent, always including the newest one;
+        with `after`, only entries with a larger id get a body (the caller
+        already has the rest). Entries without a body have no "data" key and
+        can be fetched one at a time with `entry=<id>`."""
         limit = max(1, min(int(limit), 500))
         with self._read() as r:
             found = self._find_series(r, run_id, [name])
             if name not in found:
                 raise NotFound(f"series {name!r} not found")
             sid, kind = found[name]
-            ids = [
-                row[0]
-                for row in r.execute(
-                    "SELECT id FROM data WHERE series_id=? ORDER BY step, id", (sid,)
-                )
-            ]
-            total = len(ids)
+            if entry is not None:
+                row = r.execute(
+                    "SELECT id, step, time, body FROM data WHERE id=? AND series_id=?",
+                    (int(entry), sid),
+                ).fetchone()
+                if row is None:
+                    raise NotFound(f"entry {entry} of {name!r} not found")
+                return {
+                    "name": name,
+                    "kind": kind,
+                    "entry": {"id": row["id"], "step": row["step"], "time": row["time"],
+                              "data": _loads(row["body"])},
+                }
+            rows = r.execute(
+                "SELECT id, step, time, length(body) AS size FROM data "
+                "WHERE series_id=? ORDER BY step, id",
+                (sid,),
+            ).fetchall()
+            total = len(rows)
             if total > limit:
                 stride = (total - 1) / (limit - 1) if limit > 1 else total
-                ids = [ids[round(i * stride)] for i in range(limit)]
-            rows = []
-            for i in range(0, len(ids), 500):
-                part = ids[i : i + 500]
-                rows += r.execute(
-                    "SELECT step, time, body FROM data "
-                    f"WHERE id IN ({','.join('?' * len(part))}) ORDER BY step, id",
+                rows = [rows[round(i * stride)] for i in range(limit)]
+            want, spent = [], 0
+            for row in reversed(rows):
+                if row["id"] <= after:
+                    continue
+                if budget is not None and want and spent + row["size"] > budget:
+                    break
+                want.append(row["id"])
+                spent += row["size"]
+            bodies = {}
+            for i in range(0, len(want), 500):
+                part = want[i : i + 500]
+                for row in r.execute(
+                    f"SELECT id, body FROM data WHERE id IN ({','.join('?' * len(part))})",
                     part,
-                ).fetchall()
-        return {
-            "name": name,
-            "kind": kind,
-            "total": total,
-            "entries": [
-                {"step": row["step"], "time": row["time"], "data": _loads(row["body"])}
-                for row in rows
-            ],
-        }
+                ):
+                    bodies[row["id"]] = row["body"]
+        entries = []
+        for row in rows:
+            e = {"id": row["id"], "step": row["step"], "time": row["time"]}
+            if row["id"] in bodies:
+                e["data"] = _loads(bodies[row["id"]])
+            entries.append(e)
+        return {"name": name, "kind": kind, "total": total, "entries": entries}
 
     def read_files(self, run_id, name, limit=500):
         limit = max(1, min(int(limit), 2000))

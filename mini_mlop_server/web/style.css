@@ -160,6 +160,8 @@ td.clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-spa
 .chart canvas { display: block; width: 100%; height: 210px; cursor: crosshair; }
 .chart.wide canvas { height: 360px; }
 .chart .note { color: var(--text-3); font-size: 11.5px; min-height: 16px; }
+/* A step picked on the slider whose data is still on its way. */
+.chart [aria-busy=true] { opacity: .45; transition: opacity .15s .1s; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-2);
           margin: 2px 0 6px; }
 

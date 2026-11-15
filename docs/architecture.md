@@ -102,7 +102,7 @@ Read by the UI (and usable from scripts):
 | `GET /api/projects/<name>/runs` | Runs with config and metric names |
 | `GET /api/runs/<id>` | Run details, series list, alerts |
 | `GET /api/runs/<id>/metrics?name=…&name=…&points=500&x=step\|time` | Downsampled series |
-| `GET /api/runs/<id>/data?name=…&limit=64` | Histogram / table entries |
+| `GET /api/runs/<id>/data?name=…&limit=64` | Histogram / table entries. `budget=<bytes>` fills bodies newest first up to that size, `after=<id>` skips bodies the caller already has, `entry=<id>` returns one entry |
 | `GET /api/runs/<id>/files?name=…` | File listing; `GET /api/files/<id>` for content (supports `Range`) |
 | `GET /api/runs/<id>/logs?after=<id>&limit=…` | Console lines |
 | `GET /api/runs/<id>/graph` | Model graph |

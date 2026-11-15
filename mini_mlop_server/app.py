@@ -337,8 +337,11 @@ class Handler(BaseHTTPRequestHandler):
         return values[0] if values else default
 
     def int_arg(self, name, default):
+        value = self.arg(name, default)
+        if value is None:
+            return None
         try:
-            return int(self.arg(name, default))
+            return int(value)
         except (TypeError, ValueError):
             raise HTTPError(400, f"{name} must be an integer")
 
@@ -702,7 +705,12 @@ def run_metrics(h, run_id):
 def run_data(h, run_id):
     h.send_json(
         h.store.read_data(
-            h.run(run_id), h.arg("name", ""), limit=h.int_arg("limit", 64)
+            h.run(run_id),
+            h.arg("name", ""),
+            limit=h.int_arg("limit", 64),
+            budget=h.int_arg("budget", None),
+            after=h.int_arg("after", 0),
+            entry=h.int_arg("entry", None),
         )
     )
 
